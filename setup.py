@@ -585,7 +585,7 @@ def get_pip_extras() -> str:
     Returns extras name like: cuda12_9, cuda12, cuda12_arm, rocm, ppu
     Install: uv pip install -e ".[dev]" --no-build-isolation-package rtp-llm
     """
-    return CONFIG_TO_EXTRAS[detect_build_config(verbose=False)]
+    return CONFIG_TO_EXTRAS[detect_build_config(verbose=True)]
 
 
 def should_skip_bazel_build() -> bool:
@@ -642,8 +642,8 @@ def _get_bazel_cmd_prefix(build_config: str) -> tuple:
 
     cmd = ["bazelisk"]
     if not has_output_root:
-        home_dir = os.path.expanduser("~")
-        cache_dir = os.path.join(home_dir, ".cache", f"bazel_{build_config}_cache")
+        cache_base = os.environ.get("XDG_CACHE_HOME", os.path.join(os.path.expanduser("~"), ".cache"))
+        cache_dir = os.path.join(cache_base, f"bazel_{build_config}_cache")
         cmd.append(f"--output_user_root={cache_dir}")
         print(f"Using platform-specific cache: {cache_dir}")
 
@@ -740,6 +740,45 @@ def _get_local_jobs_args() -> list:
     return []
 
 
+# ---------------------------------------------------------------------------
+# REAPI retry logic
+# ---------------------------------------------------------------------------
+
+# Bazel exit codes that indicate transient REAPI failures (worth retrying)
+_REAPI_RETRYABLE_EXIT_CODES = {
+    34,  # UNAVAILABLE — remote executor connection lost
+    38,  # LOCAL_ENVIRONMENTAL_ERROR — local env issue during remote exec
+}
+
+_REAPI_MAX_RETRIES = int(os.environ.get("RTP_BAZEL_MAX_RETRIES", "2"))
+
+
+def _run_bazel_with_retry(
+    cmd: list,
+    max_retries: int = _REAPI_MAX_RETRIES,
+    **kwargs,
+) -> subprocess.CompletedProcess:
+    """Run a bazel command, retrying on transient REAPI failures."""
+    for attempt in range(max_retries + 1):
+        result = subprocess.run(cmd, **kwargs)
+        if result.returncode not in _REAPI_RETRYABLE_EXIT_CODES:
+            return result
+        if attempt < max_retries:
+            wait = 10 * (attempt + 1)
+            print(
+                f"[retry] Bazel REAPI error (exit {result.returncode}), "
+                f"retrying in {wait}s ({attempt + 1}/{max_retries})..."
+            )
+            import time
+            time.sleep(wait)
+        else:
+            print(
+                f"[retry] Bazel REAPI error (exit {result.returncode}), "
+                f"exhausted {max_retries} retries."
+            )
+    return result
+
+
 def build_bazel_extensions(build_config: str) -> None:
     """Build C++ extensions using Bazel.
 
@@ -801,64 +840,83 @@ def build_bazel_extensions(build_config: str) -> None:
     print(f"Running: {' '.join(cmd)}")
     print(f"This may take a while... Check {log_file} for progress.")
 
-    # Run bazel with output redirected to log file
-    try:
-        with open(log_file, "w") as f:
-            # Write command info to log
-            f.write(f"Command: {' '.join(cmd)}\n")
-            f.write(f"Working directory: {project_root}\n")
-            f.write(f"Build config: {build_config}\n")
-            f.write(f"Started at: {datetime.datetime.now().isoformat()}\n")
-            f.write("=" * 60 + "\n\n")
-            f.flush()
-
-            # Run subprocess with output to both file and terminal (tee-like behavior)
-            process = subprocess.Popen(
-                cmd,
-                cwd=project_root,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-
-            # Stream output to both file and stdout
-            for line in process.stdout:
-                f.write(line)
-                f.flush()
-                # Print progress indicators to terminal
-                if any(
-                    x in line for x in ["[", "INFO:", "ERROR:", "WARNING:", "FAILED"]
-                ):
-                    print(line.rstrip())
-
-            process.wait()
-
-            # Write completion info
-            f.write("\n" + "=" * 60 + "\n")
-            f.write(f"Finished at: {datetime.datetime.now().isoformat()}\n")
-            f.write(f"Exit code: {process.returncode}\n")
-
-            if process.returncode != 0:
-                raise subprocess.CalledProcessError(process.returncode, cmd)
-
-    except subprocess.CalledProcessError as e:
-        print(f"\n" + "=" * 60)
-        print(f"ERROR: Bazel build failed with exit code {e.returncode}")
-        print(f"Check the full log at: {log_file}")
-        print(f"Last 50 lines of log:")
-        print("=" * 60)
-
-        # Print last 50 lines of log
+    # Run bazel with output redirected to log file (with REAPI retry)
+    last_error = None
+    for attempt in range(_REAPI_MAX_RETRIES + 1):
         try:
-            with open(log_file, "r") as f:
-                lines = f.readlines()
-                for line in lines[-50:]:
-                    print(line.rstrip())
-        except Exception:
-            pass
+            with open(log_file, "w") as f:
+                # Write command info to log
+                f.write(f"Command: {' '.join(cmd)}\n")
+                f.write(f"Working directory: {project_root}\n")
+                f.write(f"Build config: {build_config}\n")
+                f.write(f"Started at: {datetime.datetime.now().isoformat()}\n")
+                if attempt > 0:
+                    f.write(f"Retry attempt: {attempt}/{_REAPI_MAX_RETRIES}\n")
+                f.write("=" * 60 + "\n\n")
+                f.flush()
 
-        raise RuntimeError(f"Bazel build failed. Check log file: {log_file}") from e
+                # Run subprocess with output to both file and terminal (tee-like behavior)
+                process = subprocess.Popen(
+                    cmd,
+                    cwd=project_root,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+
+                # Stream output to both file and stdout in real-time
+                while True:
+                    line = process.stdout.readline()
+                    if not line and process.poll() is not None:
+                        break
+                    if line:
+                        f.write(line)
+                        f.flush()
+                        sys.stdout.write(line)
+                        sys.stdout.flush()
+
+                process.wait()
+
+                # Write completion info
+                f.write("\n" + "=" * 60 + "\n")
+                f.write(f"Finished at: {datetime.datetime.now().isoformat()}\n")
+                f.write(f"Exit code: {process.returncode}\n")
+
+                if process.returncode != 0:
+                    raise subprocess.CalledProcessError(process.returncode, cmd)
+
+            # Success — break out of retry loop
+            break
+
+        except subprocess.CalledProcessError as e:
+            last_error = e
+            if e.returncode in _REAPI_RETRYABLE_EXIT_CODES and attempt < _REAPI_MAX_RETRIES:
+                wait = 10 * (attempt + 1)
+                print(
+                    f"\n[retry] Bazel REAPI error (exit {e.returncode}), "
+                    f"retrying in {wait}s ({attempt + 1}/{_REAPI_MAX_RETRIES})..."
+                )
+                import time
+                time.sleep(wait)
+                continue
+
+            print(f"\n" + "=" * 60)
+            print(f"ERROR: Bazel build failed with exit code {e.returncode}")
+            print(f"Check the full log at: {log_file}")
+            print(f"Last 50 lines of log:")
+            print("=" * 60)
+
+            # Print last 50 lines of log
+            try:
+                with open(log_file, "r") as f:
+                    lines = f.readlines()
+                    for line in lines[-50:]:
+                        print(line.rstrip())
+            except Exception:
+                pass
+
+            raise RuntimeError(f"Bazel build failed. Check log file: {log_file}") from e
 
     print(f"\nBazel build completed successfully!")
     print(f"Full log available at: {log_file}")
@@ -1046,50 +1104,28 @@ def generate_pyi_stubs(project_root: Path) -> None:
     """Generate .pyi type stubs from compiled pybind11 .so modules.
 
     Runs pybind11_stubgen in a subprocess to avoid CUDA context pollution.
-    Raises RuntimeError on failure so the build stops immediately.
+    Non-fatal: stubs are helpful for IDE autocomplete but not required at runtime.
     """
     ops_dir = project_root / "rtp_llm" / "ops"
     modules = ["libth_transformer_config", "libth_transformer", "librtp_compute_ops"]
 
-    # gen_pyi.py must run as a subprocess because:
-    # 1. Importing the .so modules initializes CUDA, which we don't want in setup.py
-    # 2. PyTorch destructors can crash on exit, so we use os._exit in the subprocess
-    gen_script = project_root / "tools" / "gen_pyi" / "gen_pyi.py"
-    if gen_script.exists():
-        print(f"\nGenerating .pyi stubs via {gen_script}:")
-        result = subprocess.run(
-            [sys.executable, str(gen_script)],
-            cwd=str(project_root),
-            timeout=120,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            print("  .pyi stubs generated successfully")
-        else:
-            msg = f"gen_pyi.py failed (exit={result.returncode})"
-            if result.stderr:
-                msg += f"\nstderr: {result.stderr[:500]}"
-            raise RuntimeError(msg)
-        return
-
-    # Fallback: run pybind11_stubgen directly if gen_pyi.py doesn't exist
-    print(f"\nGenerating .pyi stubs (fallback, pybind11_stubgen direct):")
+    print(f"\nGenerating .pyi stubs via pybind11_stubgen:")
     for module in modules:
-        result = subprocess.run(
-            [sys.executable, "-m", "pybind11_stubgen", module, "-o", str(ops_dir)],
-            cwd=str(project_root),
-            timeout=60,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            print(f"  Generated .pyi for {module}")
-        else:
-            raise RuntimeError(
-                f"pybind11_stubgen failed for {module} (exit={result.returncode}): "
-                f"{result.stderr[:200]}"
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "pybind11_stubgen", module, "-o", str(ops_dir)],
+                cwd=str(project_root),
+                timeout=60,
+                capture_output=True,
+                text=True,
             )
+            if result.returncode == 0:
+                print(f"  Generated .pyi for {module}")
+            else:
+                print(f"  WARNING: pybind11_stubgen failed for {module} "
+                      f"(exit={result.returncode}): {result.stderr[:200]}")
+        except Exception as e:
+            print(f"  WARNING: pybind11_stubgen skipped for {module}: {e}")
 
 
 def copy_extensions(project_root: Path, build_config: str) -> None:
@@ -1428,7 +1464,7 @@ class BazelTest(Command):
         print(f"Running bazel {mode}: {self.test_target}")
         print(f"Command: {' '.join(cmd)}")
 
-        result = subprocess.run(cmd, cwd=project_root)
+        result = _run_bazel_with_retry(cmd, cwd=project_root)
         if result.returncode != 0 and result.returncode != 4:
             # exit code 4 = no test targets matched, not an error
             raise SystemExit(result.returncode)
