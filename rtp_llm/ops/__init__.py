@@ -120,7 +120,6 @@ try:
         FfnDisAggregateConfig,
         FIFOSchedulerConfig,
         FMHAConfig,
-        FMHAType,
         HWKernelConfig,
         KVCacheConfig,
         MiscellaneousConfig,

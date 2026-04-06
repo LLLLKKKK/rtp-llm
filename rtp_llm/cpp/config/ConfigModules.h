@@ -95,38 +95,18 @@ struct ConcurrencyConfig {
     std::string to_string() const;
 };
 
-enum class FMHAType {
-    FLASH_INFER,
-    NONE,
-    OPEN_SOURCE,
-    PAGED_OPEN_SOURCE,
-    PAGED_TRT_V2,
-    TRT_V1,
-    TRT_V2,
-    XQA,
-    AITER_PREFILL,
-    AITER_ASM_PREFILL,
-    AITER_PAGED_PREFILL,
-    AITER_DECODE,
-    AITER_ASM_DECODE,
-    AITER_TRITON_DECODE,
-    PY_FLASHINFER_PREFILL_PAGED,
-    PY_FLASHINFER_PREFILL_RAGGED,
-    PY_FLASHINFER_DECODE,
-    FLASHINFER_MLA_PREFILL,
-    FLASHINFER_MLA_DECODE,
-    SPARSE_FLASHMLA,
-    CP_FLASH_INFER,
-    HEADWISE,
-};
-
 struct FMHAConfig {
+    // String-based attention backend selection (new API)
+    std::string attn_backend              = "auto";  // "auto", "none", or a specific backend NAME
+    std::string prefill_attn_backend      = "";      // override for prefill stage (empty = use attn_backend)
+    std::string decode_attn_backend       = "";      // override for decode stage (empty = use attn_backend)
+    std::string disable_attn_backends     = "";      // comma-separated list of backend NAMEs to disable
+
+    // Legacy boolean flags (kept for backward compatibility, derived from above)
     bool        enable_fmha                   = true;
     bool        enable_trt_fmha               = true;
     bool        enable_paged_trt_fmha         = true;
     bool        enable_open_source_fmha       = true;
-    bool        enable_paged_open_source_fmha = true;
-    bool        enable_trtv1_fmha             = true;
     bool        disable_flash_infer           = false;
     bool        enable_xqa                    = true;
     bool        use_aiter_pa                  = true;
