@@ -14,7 +14,7 @@ import pytest
 @pytest.mark.smoke
 @pytest.mark.timeout(7200)
 @pytest.mark.gpu(type="H20", count=1)
-def test_download_gemma4_31b(gpu_lock):
+def test_download_gemma4_31b():
     """Download gemma-4-31B-it to /mnt/nas1/hf/ if not already present."""
     model_id = "google/gemma-4-31B-it"
     target_dir = "/mnt/nas1/hf/gemma-4-31B-it"
