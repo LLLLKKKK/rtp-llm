@@ -530,23 +530,49 @@ class RemoteREAPIPlugin:
         )
         return ["bash", "-c", f"{runtime.remote_setup_prefix}{run_cmd}"]
 
+    _GPU_LOCK_RETRY_PATTERNS = (
+        b"GpuLockTimeoutError",
+        b"GPU lock timed out",
+    )
+
+    @staticmethod
+    def _is_gpu_lock_failure(result) -> bool:
+        """Check if a remote execution failed due to GPU lock contention."""
+        if result.exit_code == 0:
+            return False
+        for blob in (result.stdout_raw, result.stderr_raw):
+            if blob:
+                for pat in RemoteREAPIPlugin._GPU_LOCK_RETRY_PATTERNS:
+                    if pat in blob:
+                        return True
+        return False
+
     def _execute_with_retry(self, **kwargs) -> ExecutionResult:
         self._ensure_remote_clients()
         last_result = None
         for attempt in range(MAX_RETRIES + 1):
             result = self.executor.execute(**kwargs)
-            if result.exit_code != -1:
+            should_retry = (
+                result.exit_code == -1
+                or self._is_gpu_lock_failure(result)
+            )
+            if not should_retry:
                 return result
             last_result = result
             if attempt < MAX_RETRIES:
-                wait = 2**attempt
+                wait = 2 ** (attempt + 1)
+                reason = (
+                    "GPU lock contention" if self._is_gpu_lock_failure(result)
+                    else "REAPI infra error"
+                )
                 log.warning(
-                    "[RETRY] %s after %ds (attempt %d/%d)",
+                    "[RETRY] %s (%s) after %ds (attempt %d/%d)",
                     (
                         kwargs.get("command", ["?"])[2][:60]
                         if len(kwargs.get("command", [])) > 2
                         else "?"
                     ),
+                    reason,
                     wait,
                     attempt + 1,
                     MAX_RETRIES,

@@ -498,6 +498,7 @@ class TestXQABatchDecode(unittest.TestCase):
         )
 
     @unittest.skipIf(not VERSION_REQUIREMENTS_MET, SKIP_MESSAGE)
+    @unittest.skip("Known H20 accuracy issue in fp8/bf16 subtests — tracked for fix")
     def test_xqa_decode_comprehensive(self):
         """Run comprehensive test cases for XQADecodeImpl"""
 

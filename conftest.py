@@ -1,4 +1,31 @@
+# ============================================================================
+# xdist Per-Worker GPU Pinning (MUST be first — before any torch import)
+# ============================================================================
+import os as _os
+import sys as _sys
 
+_SESSION_CUDA_VISIBLE_DEVICES = _os.environ.get("CUDA_VISIBLE_DEVICES")
+
+_xdist_worker = _os.environ.get("PYTEST_XDIST_WORKER")
+if _xdist_worker:
+    if "torch" in _sys.modules:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "torch imported before conftest GPU pinning — "
+            "CUDA_VISIBLE_DEVICES will still take effect if cuInit() hasn't fired yet"
+        )
+    _wn = int(_xdist_worker.replace("gw", ""))
+
+    if _SESSION_CUDA_VISIBLE_DEVICES:
+        _gpus = [g.strip() for g in _SESSION_CUDA_VISIBLE_DEVICES.split(",") if g.strip()]
+    else:
+        _gc = int(_os.environ.get("GPU_COUNT", "0"))
+        _gpus = [str(i) for i in range(_gc)] if _gc > 0 else []
+
+    if len(_gpus) > 1:
+        _os.environ["CUDA_VISIBLE_DEVICES"] = _gpus[_wn % len(_gpus)]
+
+# ============================================================================
 import logging
 import os
 import pytest
@@ -68,20 +95,86 @@ def _get_gpu_count_from_markers(node) -> int:
     return 1
 
 
+@pytest.fixture(scope="function", autouse=True)
+def _gpu_isolation(request):
+    """Auto GPU isolation for multi-GPU py-ut tests (count>1).
+
+    For count<=1: no-op (worker is already pinned to 1 GPU at module level).
+    For count>1: acquires file locks via DeviceResource for the needed GPUs.
+
+    IMPORTANT: Under xdist, each worker is pinned to a single GPU at module
+    level. CUDA_VISIBLE_DEVICES cannot be expanded after cuInit() — the CUDA
+    runtime reads it once during initialization. Multi-GPU tests that spawn
+    subprocesses (mp.spawn/mp.Process) will fail because children inherit the
+    pinned single-GPU view. These tests must be skipped under xdist.
+    """
+    gpu_marker = request.node.get_closest_marker("gpu")
+    if not gpu_marker:
+        yield
+        return
+
+    gpu_count = int(gpu_marker.kwargs.get("count", 1))
+    if gpu_count <= 1:
+        yield
+        return
+
+    if _xdist_worker and _SESSION_CUDA_VISIBLE_DEVICES:
+        session_gpus = [g.strip() for g in _SESSION_CUDA_VISIBLE_DEVICES.split(",") if g.strip()]
+        if len(session_gpus) < gpu_count:
+            pytest.skip(
+                f"Skipping multi-GPU test (need {gpu_count} GPUs) under xdist: "
+                f"worker pinned to 1 GPU, CUDA_VISIBLE_DEVICES cannot be expanded after cuInit()"
+            )
+
+    from rtp_llm.test.utils.device_resource import (
+        DeviceResource,
+        GpuLockError,
+        GPU_LOCK_DEFAULT_TIMEOUT,
+        GPU_LOCK_TIMEOUT_ENV,
+        get_device_info,
+        _get_visible_devices_env,
+    )
+
+    device_info = get_device_info()
+    if not device_info:
+        yield
+        return
+
+    device_name, _ = device_info
+    env_name = _get_visible_devices_env(device_name)
+    saved_cvd = os.environ.get(env_name)
+
+    if _SESSION_CUDA_VISIBLE_DEVICES:
+        os.environ[env_name] = _SESSION_CUDA_VISIBLE_DEVICES
+    elif env_name in os.environ:
+        del os.environ[env_name]
+
+    lock_timeout = int(os.environ.get(GPU_LOCK_TIMEOUT_ENV, GPU_LOCK_DEFAULT_TIMEOUT))
+    try:
+        with DeviceResource(required_gpu_count=gpu_count, timeout=lock_timeout) as gpu_resource:
+            os.environ[env_name] = ",".join(gpu_resource.gpu_ids)
+            logger.info(
+                "multi-GPU isolation: %s=%s (count=%d)",
+                env_name, os.environ[env_name], gpu_count,
+            )
+            yield gpu_resource
+    except GpuLockError as exc:
+        pytest.fail(f"GPU lock failed: {exc}", pytrace=False)
+    finally:
+        if saved_cvd is not None:
+            os.environ[env_name] = saved_cvd
+        elif env_name in os.environ:
+            del os.environ[env_name]
+
+
 @pytest.fixture(scope="function")
 def gpu_lock(request):
-    """
-    Function-scoped GPU lock — acquires N GPUs for this test.
+    """Function-scoped GPU lock for smoke tests.
 
-    N is determined by @pytest.mark.gpu(count=N) or GPU_COUNT env.
-    Uses DeviceResource file locks for cross-process safety:
-    - xdist workers on the same session compete for GPUs
-    - Multiple sessions on the same machine compete via the same file locks
-    - REAPI ensures the machine has enough GPUs (via gpu_count scheduling)
-
-    count=1: lock 1 GPU, other workers/sessions can use remaining GPUs
-    count=2: lock 2 GPUs
-    count=4: lock 4 GPUs, other tests wait
+    Acquires N GPUs via DeviceResource file locks and sets CUDA_VISIBLE_DEVICES.
+    This only affects SUBPROCESSES spawned after the fixture (e.g., server
+    processes in smoke tests).  For py-ut in-process CUDA, the autouse
+    _gpu_isolation fixture handles GPU assignment instead.
     """
     if request.node.get_closest_marker("no_gpu_lock"):
         yield None
@@ -94,6 +187,9 @@ def gpu_lock(request):
 
     from rtp_llm.test.utils.device_resource import (
         DeviceResource,
+        GpuLockError,
+        GPU_LOCK_DEFAULT_TIMEOUT,
+        GPU_LOCK_TIMEOUT_ENV,
         get_device_info,
         _get_visible_devices_env,
     )
@@ -106,10 +202,14 @@ def gpu_lock(request):
     device_name, _ = device_info
     env_name = _get_visible_devices_env(device_name)
 
-    with DeviceResource(required_gpu_count=gpu_count) as gpu_resource:
-        os.environ[env_name] = ",".join(gpu_resource.gpu_ids)
-        logger.info(f"gpu_lock: {env_name}={os.environ[env_name]} (count={gpu_count})")
-        yield gpu_resource
+    lock_timeout = int(os.environ.get(GPU_LOCK_TIMEOUT_ENV, GPU_LOCK_DEFAULT_TIMEOUT))
+    try:
+        with DeviceResource(required_gpu_count=gpu_count, timeout=lock_timeout) as gpu_resource:
+            os.environ[env_name] = ",".join(gpu_resource.gpu_ids)
+            logger.info(f"gpu_lock: {env_name}={os.environ[env_name]} (count={gpu_count})")
+            yield gpu_resource
+    except GpuLockError as exc:
+        pytest.fail(f"GPU lock failed: {exc}", pytrace=False)
 
 
 @pytest.hookimpl(tryfirst=True)

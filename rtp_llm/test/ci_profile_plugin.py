@@ -143,6 +143,10 @@ def pytest_configure(config: pytest.Config) -> None:
     else:
         config.option.markexpr = profile_markexpr
 
+    gpu_type = prof.get("gpu_type")
+    if gpu_type and not getattr(config.option, "remote_gpu_type", None):
+        config.option.remote_gpu_type = gpu_type
+
     paths = prof.get("paths")
     if paths is not None:
         if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):

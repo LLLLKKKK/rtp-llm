@@ -8,9 +8,27 @@ import sys
 import time
 import traceback
 from contextlib import ExitStack
-from typing import Any, List, Set
+from typing import Any, List, Optional, Set
 
 from filelock import FileLock, Timeout
+
+GPU_LOCK_TIMEOUT_ENV = "RTP_GPU_LOCK_TIMEOUT"
+GPU_LOCK_DEFAULT_TIMEOUT = 120
+
+
+class GpuLockError(RuntimeError):
+    """Raised when GPU lock acquisition fails (timeout or insufficient GPUs)."""
+    pass
+
+
+class GpuLockTimeoutError(GpuLockError):
+    """Raised when GPU lock acquisition times out (GPUs are busy)."""
+    pass
+
+
+class GpuInsufficientError(GpuLockError):
+    """Raised when the visible GPU count cannot satisfy the request at all."""
+    pass
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -128,13 +146,27 @@ def get_gpu_ids():
 
 
 class DeviceResource:
-    def __init__(self, required_gpu_count: int):
+    def __init__(self, required_gpu_count: int, timeout: Optional[int] = None):
+        """
+        Args:
+            timeout: seconds to wait for GPU locks.
+                     None (default) = wait forever (for Bazel / standalone usage).
+                     Pytest fixtures should pass an explicit timeout.
+        """
         self.required_gpu_count = required_gpu_count
         self.total_gpus = get_gpu_ids()
         if required_gpu_count > len(self.total_gpus):
-            raise ValueError(
-                f"required gpu count {required_gpu_count} is greater than total gpu count {len(self.total_gpus)}"
+            raise GpuInsufficientError(
+                f"Need {required_gpu_count} GPUs but only {len(self.total_gpus)} visible "
+                f"(CUDA/HIP_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', os.environ.get('HIP_VISIBLE_DEVICES', 'unset'))})"
             )
+        env_timeout = os.environ.get(GPU_LOCK_TIMEOUT_ENV)
+        if timeout is not None:
+            self.timeout = timeout
+        elif env_timeout is not None:
+            self.timeout = int(env_timeout)
+        else:
+            self.timeout = None  # wait forever (Bazel / standalone)
         self.gpu_ids: List[int] = []
         self.gpu_locks = ExitStack()
         self.global_lock_file = "/tmp/rtp_llm/smoke/test/gpu_status_lock"
@@ -258,7 +290,11 @@ class DeviceResource:
         return False
 
     def __enter__(self):
-        logging.info(f"waiting for gpu count:[{self.required_gpu_count}]")
+        timeout_desc = f"{self.timeout}s" if self.timeout is not None else "infinite"
+        logging.info(
+            f"waiting for gpu count:[{self.required_gpu_count}] timeout={timeout_desc}"
+        )
+        deadline = (time.time() + self.timeout) if self.timeout is not None else None
         while True:
             with FileLock(self.global_lock_file):
                 try:
@@ -266,12 +302,18 @@ class DeviceResource:
                         gpus_clean = self._ensure_gpus_released()
                         if gpus_clean:
                             break
-                        # Zombie contexts found — release these GPUs and retry
                         logging.warning(f"GPUs {self.gpu_ids} have zombie contexts, retrying")
                         self.gpu_ids = []
                         self.gpu_locks.close()
-                except Exception as e:
-                    logging.warn(f"{traceback.format_exc()}")
+                except (GpuLockError, GpuInsufficientError):
+                    raise
+                except Exception:
+                    logging.warning(f"{traceback.format_exc()}")
+            if deadline is not None and time.time() >= deadline:
+                raise GpuLockTimeoutError(
+                    f"GPU lock timed out after {self.timeout}s: "
+                    f"need {self.required_gpu_count} GPUs from {self.total_gpus}"
+                )
             time.sleep(1)
         return self
 
