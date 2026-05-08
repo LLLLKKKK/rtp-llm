@@ -18,6 +18,7 @@ from . import remote_execution_pb2_grpc as re_grpc
 from .action_cache_client import _encode_varint
 from .cas_client import CASClient
 from .endpoint_info import (
+    ExecutorEndpointPool,
     combine_reapi_endpoints,
     describe_reapi_endpoint,
     extract_remote_worker_ip,
@@ -81,6 +82,11 @@ class ExecutionResult:
     # Local paths for live-tailed stream logs (ByteStream); same as logged at execute() start
     stream_stdout_path: Optional[str] = None
     stream_stderr_path: Optional[str] = None
+    executor_endpoint: Optional[str] = None
+    operation_name: Optional[str] = None
+    last_stage: Optional[str] = None
+    infra_category: Optional[str] = None
+    failover_attempts: int = 0
 
 
 class RemoteExecutor:
@@ -112,6 +118,33 @@ class RemoteExecutor:
         self.cas = cas
         self.metadata = metadata or []
         self.instance_name = ""
+
+    def close(self) -> None:
+        try:
+            self.channel.close()
+        except Exception:
+            pass
+
+    def cancel_operation(self, operation_name: Optional[str], timeout: int = 5) -> bool:
+        if not operation_name:
+            return False
+        try:
+            self.channel.unary_unary(
+                "/google.longrunning.Operations/CancelOperation",
+                request_serializer=lambda req: req,
+                response_deserializer=lambda resp: resp,
+            )(
+                b"\x0a"
+                + _encode_varint(len(operation_name.encode("utf-8")))
+                + operation_name.encode("utf-8"),
+                metadata=self.metadata,
+                timeout=timeout,
+            )
+            log.info("Cancelled remote operation %s", operation_name)
+            return True
+        except Exception:
+            log.warning("Failed to cancel remote operation %s", operation_name)
+            return False
 
     @staticmethod
     def _try_unpack_execute_metadata(
@@ -178,7 +211,10 @@ class RemoteExecutor:
         action_digest = self.cas.upload_blob(action.SerializeToString())
 
         log.info(
-            "[REMOTE_SUBMIT] action=%s timeout=%ds", action_digest.hash[:12], timeout
+            "[REMOTE_SUBMIT] executor=%s action=%s timeout=%ds",
+            self.grpc_uri,
+            action_digest.hash[:12],
+            timeout,
         )
 
         abs_stdout: Optional[str] = None
@@ -210,9 +246,11 @@ class RemoteExecutor:
         started_stdout = False
         started_stderr = False
         logged_metadata_worker: Optional[str] = None
+        last_stage = "SUBMITTED"
 
         # --- atexit / SIGTERM cancel: abort remote action if local process dies ---
         _op_name_holder: List[Optional[str]] = [None]  # mutable for closure
+        _last_op_name_holder: List[Optional[str]] = [None]
         _original_sigterm = signal.getsignal(signal.SIGTERM)
 
         def _cancel_remote():
@@ -220,24 +258,7 @@ class RemoteExecutor:
             if not name:
                 return
             _op_name_holder[0] = None  # prevent double cancel
-            try:
-                # Use generic unary-unary call — no Operations proto needed
-                self.channel.unary_unary(
-                    "/google.longrunning.Operations/CancelOperation",
-                    request_serializer=lambda req: req,
-                    response_deserializer=lambda resp: resp,
-                )(
-                    # CancelOperationRequest { string name = 1; }
-                    # Field 1, length-delimited (wire type 2) = 0x0a, then varint length, then UTF-8
-                    b"\x0a"
-                    + _encode_varint(len(name.encode("utf-8")))
-                    + name.encode("utf-8"),
-                    metadata=self.metadata,
-                    timeout=5,
-                )
-                log.info("Cancelled remote operation %s on exit", name)
-            except Exception:
-                pass
+            self.cancel_operation(name)
 
         def _sigterm_handler(signum, frame):
             _cancel_remote()
@@ -288,6 +309,8 @@ class RemoteExecutor:
             ):
                 if _op_name_holder[0] is None and op.name:
                     _op_name_holder[0] = op.name
+                if op.name:
+                    _last_op_name_holder[0] = op.name
                 meta = self._try_unpack_execute_metadata(op)
                 if meta is not None:
                     w = (meta.partial_execution_metadata.worker or "").strip()
@@ -347,6 +370,7 @@ class RemoteExecutor:
                 if op.done:
                     if on_stage:
                         on_stage("COMPLETED", op.name)
+                    last_stage = "COMPLETED"
                     stop_event.set()
                     for t in stream_threads:
                         t.join(timeout=60)
@@ -359,6 +383,9 @@ class RemoteExecutor:
                     )
                     result.stream_stdout_path = abs_stdout
                     result.stream_stderr_path = abs_stderr
+                    result.executor_endpoint = self.grpc_uri
+                    result.operation_name = op.name
+                    result.last_stage = last_stage
                     self._write_final_stream_files(
                         stream_stdout_file,
                         stream_stderr_file,
@@ -375,6 +402,7 @@ class RemoteExecutor:
                     return result
 
                 stage = self._extract_stage(op)
+                last_stage = stage
                 if on_stage:
                     on_stage(stage, op.name)
                 log.info("[REMOTE_STAGE] stage=%s op=%s", stage, (op.name or "")[:48])
@@ -403,6 +431,10 @@ class RemoteExecutor:
                 metadata_worker=logged_metadata_worker,
                 stream_stdout_path=abs_stdout,
                 stream_stderr_path=abs_stderr,
+                executor_endpoint=self.grpc_uri,
+                operation_name=_last_op_name_holder[0],
+                last_stage=last_stage,
+                infra_category=category,
             )
         finally:
             # Unregister cancel handlers — action completed or errored
@@ -424,6 +456,10 @@ class RemoteExecutor:
             metadata_worker=logged_metadata_worker,
             stream_stdout_path=abs_stdout,
             stream_stderr_path=abs_stderr,
+            executor_endpoint=self.grpc_uri,
+            operation_name=_last_op_name_holder[0],
+            last_stage=last_stage,
+            infra_category="executor_stream_ended",
         )
 
     def _write_final_stream_files(
@@ -545,3 +581,102 @@ class RemoteExecutor:
     def download_output(self, digest: re_pb2.Digest) -> str:
         data = self.cas.download_blob(digest)
         return data.decode("utf-8", errors="replace")
+
+
+class FailoverRemoteExecutor:
+    """RemoteExecutor wrapper that rotates executor IPs on infra failures."""
+
+    _FAILOVER_CATEGORIES = {
+        "executor_rpc",
+        "executor_stream_ended",
+        "watchdog_timeout",
+    }
+
+    def __init__(
+        self,
+        executor_endpoint: str,
+        cas: CASClient,
+        metadata: Optional[List[tuple]] = None,
+        *,
+        enabled: bool = True,
+        max_failovers: int = 3,
+        dns_refresh_seconds: int = 60,
+        fallback_executor_endpoint: Optional[str] = None,
+        executor_factory=RemoteExecutor,
+    ):
+        self.pool = ExecutorEndpointPool(
+            executor_endpoint,
+            fallback_uri=fallback_executor_endpoint,
+            refresh_seconds=dns_refresh_seconds,
+        )
+        self.cas = cas
+        self.metadata = metadata or []
+        self.enabled = enabled
+        self.max_failovers = max(0, int(max_failovers))
+        self.executor_factory = executor_factory
+        self._executor: Optional[RemoteExecutor] = None
+        self.reapi_targets_combined = combine_reapi_endpoints(
+            cas.grpc_uri,
+            self.pool.current_endpoint(),
+        )
+
+    def _new_executor(self, endpoint: str) -> RemoteExecutor:
+        if self._executor is not None:
+            self._executor.close()
+        self._executor = self.executor_factory(endpoint, self.cas, self.metadata)
+        self.reapi_targets_combined = self._executor.reapi_targets_combined
+        return self._executor
+
+    @staticmethod
+    def _is_failoverable(result: ExecutionResult) -> bool:
+        if result.exit_code != -1:
+            return False
+        return result.infra_category in FailoverRemoteExecutor._FAILOVER_CATEGORIES
+
+    def execute(self, **kwargs) -> ExecutionResult:
+        attempts = 0
+        endpoint = self.pool.current_endpoint()
+        tried = []
+
+        while True:
+            executor = self._new_executor(endpoint)
+            tried.append(endpoint)
+            result = executor.execute(**kwargs)
+            result.failover_attempts = attempts
+            if not self.enabled or not self._is_failoverable(result):
+                return result
+            self.pool.refresh(force=True)
+            if attempts >= self.max_failovers or len(self.pool.endpoints()) <= 1:
+                log.warning(
+                    "[EXECUTOR_FAILOVER] exhausted endpoint=%s category=%s "
+                    "operation=%s last_stage=%s tried=[%s]",
+                    endpoint,
+                    result.infra_category,
+                    result.operation_name or "n/a",
+                    result.last_stage or "n/a",
+                    ",".join(tried),
+                )
+                return result
+
+            old_endpoint = endpoint
+            old_operation = result.operation_name
+            if old_operation:
+                executor.cancel_operation(old_operation)
+            endpoint = self.pool.advance(refresh=True)
+            attempts += 1
+            log.warning(
+                "[EXECUTOR_FAILOVER] old=%s new=%s category=%s operation=%s "
+                "last_stage=%s will_rerun=true attempt=%d/%d",
+                old_endpoint,
+                endpoint,
+                result.infra_category,
+                old_operation or "n/a",
+                result.last_stage or "n/a",
+                attempts,
+                self.max_failovers,
+            )
+
+    def download_output(self, digest: re_pb2.Digest) -> str:
+        if self._executor is None:
+            self._new_executor(self.pool.current_endpoint())
+        return self._executor.download_output(digest)

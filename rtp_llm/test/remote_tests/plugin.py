@@ -25,7 +25,7 @@ from .remote_exec_rtp import (
     collect_session_files,
     infer_gpu_type_from_markexpr,
     quote_args,
-    resolve_default_reapi_endpoints,
+    resolve_default_reapi_endpoint_config,
     resolve_gpu_type_from_items,
     resolve_item_gpu_request,
     should_dispatch_item_remotely,
@@ -33,7 +33,7 @@ from .remote_exec_rtp import (
 
 if TYPE_CHECKING:
     from .cas_client import CASClient, UploadProgress
-    from .executor import ExecutionResult, RemoteExecutor
+    from .executor import ExecutionResult, FailoverRemoteExecutor
     from .test_cache import CacheEntry
 
 log = logging.getLogger(__name__)
@@ -62,11 +62,18 @@ def _get_int_env(name: str, default: int) -> int:
         return default
 
 
+def _get_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    return raw.lower() not in ("0", "false", "no", "off")
+
+
 def _load_remote_execution_types():
     from .cas_client import CASClient, UploadProgress
-    from .executor import ExecutionResult, RemoteExecutor
+    from .executor import ExecutionResult, FailoverRemoteExecutor
 
-    return CASClient, UploadProgress, ExecutionResult, RemoteExecutor
+    return CASClient, UploadProgress, ExecutionResult, FailoverRemoteExecutor
 
 
 def _remote_stream_log_paths(rootdir: Path, key: str) -> Tuple[Path, Path]:
@@ -222,6 +229,31 @@ def pytest_addoption(parser):
         "--remote-cas", default=None, help="CAS gRPC endpoint (grpc://host:port)"
     )
     g.addoption(
+        "--remote-executor-failover",
+        dest="remote_executor_failover",
+        action="store_true",
+        default=_get_bool_env("RTP_REMOTE_EXECUTOR_FAILOVER", True),
+        help="Fail over between executor IPs resolved from the executor host (default: on)",
+    )
+    g.addoption(
+        "--remote-no-executor-failover",
+        dest="remote_executor_failover",
+        action="store_false",
+        help="Disable executor IP failover for remote executions",
+    )
+    g.addoption(
+        "--remote-executor-failover-max",
+        type=int,
+        default=_get_int_env("RTP_REMOTE_EXECUTOR_FAILOVER_MAX", 3),
+        help="Max executor IP failovers per remote action (default: 3)",
+    )
+    g.addoption(
+        "--remote-executor-dns-refresh-seconds",
+        type=int,
+        default=_get_int_env("RTP_REMOTE_EXECUTOR_DNS_REFRESH_SECONDS", 60),
+        help="Refresh executor DNS/vipserver resolution after this many seconds (default: 60)",
+    )
+    g.addoption(
         "--remote-header",
         action="append",
         default=[],
@@ -326,19 +358,20 @@ def _resolve_endpoints(config) -> tuple:
     rootdir = Path(config.rootdir)
     executor_ep = config.getoption("--remote-executor")
     cas_ep = config.getoption("--remote-cas")
+    fallback_executor_ep = None
     if not executor_ep or not cas_ep:
         env = config.getoption("--remote-env")
-        default_executor_ep, default_cas_ep = resolve_default_reapi_endpoints(
-            rootdir, env=env
-        )
-        executor_ep = executor_ep or default_executor_ep
-        cas_ep = cas_ep or default_cas_ep
+        defaults = resolve_default_reapi_endpoint_config(rootdir, env=env)
+        if not executor_ep:
+            executor_ep = defaults.executor
+            fallback_executor_ep = defaults.fallback_executor
+        cas_ep = cas_ep or defaults.cas
     if not executor_ep or not cas_ep:
         raise pytest.UsageError(
             "--remote requires REAPI endpoints; pass --remote-executor/--remote-cas "
             "or configure [tool.rtp-llm.remote] in pyproject.toml"
         )
-    return executor_ep, cas_ep
+    return executor_ep, cas_ep, fallback_executor_ep
 
 
 def _parse_metadata(config) -> list:
@@ -435,7 +468,11 @@ class RemoteREAPIPlugin:
         self.mode = mode
         self.config = config
         self.rootdir = Path(config.rootdir)
-        self._executor_ep, self._cas_ep = _resolve_endpoints(config)
+        (
+            self._executor_ep,
+            self._cas_ep,
+            self._fallback_executor_ep,
+        ) = _resolve_endpoints(config)
         self.metadata = _parse_metadata(config)
         requested_timeout = config.getoption("--remote-timeout")
         self.timeout = min(requested_timeout, MAX_REMOTE_TIMEOUT)
@@ -447,7 +484,14 @@ class RemoteREAPIPlugin:
             )
         self._cas_workers = config.getoption("--remote-cas-upload-workers")
         self.cas: Optional[CASClient] = None
-        self.executor: Optional[RemoteExecutor] = None
+        self.executor: Optional[FailoverRemoteExecutor] = None
+        self._executor_failover = config.getoption("remote_executor_failover")
+        self._executor_failover_max = config.getoption(
+            "--remote-executor-failover-max"
+        )
+        self._executor_dns_refresh_seconds = config.getoption(
+            "--remote-executor-dns-refresh-seconds"
+        )
 
         self._remote_file_handler: Optional[logging.Handler] = None
         log_file_opt = config.getoption("--remote-log-file", default=None)
@@ -521,14 +565,22 @@ class RemoteREAPIPlugin:
     def _ensure_remote_clients(self) -> None:
         if self.cas is not None and self.executor is not None:
             return
-        CASClient, _, _, RemoteExecutor = _load_remote_execution_types()
+        CASClient, _, _, FailoverRemoteExecutor = _load_remote_execution_types()
         cas = CASClient(
             self._cas_ep,
             self.metadata,
             batch_upload_workers=self._cas_workers,
         )
         self.cas = cas
-        self.executor = RemoteExecutor(self._executor_ep, cas, self.metadata)
+        self.executor = FailoverRemoteExecutor(
+            self._executor_ep,
+            cas,
+            self.metadata,
+            enabled=self._executor_failover,
+            max_failovers=self._executor_failover_max,
+            dns_refresh_seconds=self._executor_dns_refresh_seconds,
+            fallback_executor_endpoint=self._fallback_executor_ep,
+        )
 
     def _ensure_test_cache(self) -> None:
         if self._test_cache is not None or not self._test_cache_enabled:

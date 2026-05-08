@@ -14,7 +14,6 @@ from __future__ import annotations
 import logging
 import os
 import shlex
-import socket
 import sys
 from dataclasses import dataclass
 from functools import lru_cache
@@ -63,6 +62,15 @@ class RemoteRuntimeConfig:
     env_vars: dict
     platform_properties: dict
     remote_setup_prefix: str
+
+
+@dataclass(frozen=True)
+class ReapiEndpointConfig:
+    """Default REAPI endpoints loaded from pyproject without DNS resolution."""
+
+    executor: Optional[str]
+    cas: Optional[str]
+    fallback_executor: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -137,16 +145,29 @@ def quote_args(args) -> str:
     return " ".join(shlex.quote(arg) for arg in args)
 
 
-def _resolve_host(host: str, port: int) -> str:
-    """Resolve hostname to IP (handles vipserver DNS), return grpc:// URI."""
-    try:
-        results = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
-        if results:
-            ip = results[0][4][0]
-            return f"grpc://{ip}:{port}"
-    except (socket.gaierror, OSError):
-        pass
+def _endpoint_uri(host: str, port: int) -> str:
+    """Return a REAPI endpoint URI without resolving DNS.
+
+    Pytest remote owns executor DNS/vipserver resolution so it can refresh and
+    fail over between resolved IPs. Keep outer config/script layers as stable
+    hostnames.
+    """
     return f"grpc://{host}:{port}"
+
+
+def _configured_endpoint(
+    cfg: dict,
+    *,
+    key_prefix: str,
+    env: str,
+    port_key: str,
+    default_port: int,
+) -> Optional[str]:
+    host = cfg.get(f"{key_prefix}-{env}", "")
+    if not host:
+        return None
+    port = int(cfg.get(port_key, default_port))
+    return _endpoint_uri(host, port)
 
 
 # ---------------------------------------------------------------------------
@@ -154,29 +175,59 @@ def _resolve_host(host: str, port: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-def resolve_default_reapi_endpoints(
+def resolve_default_reapi_endpoint_config(
     rootdir: Path, env: str = "daily"
-) -> Tuple[Optional[str], Optional[str]]:
-    """Resolve executor/cas endpoints from [tool.rtp-llm.remote].
+) -> ReapiEndpointConfig:
+    """Load executor/cas endpoints from [tool.rtp-llm.remote].
 
     ``env`` selects which host keys to use: ``"daily"`` or ``"online"``.
+    Hostnames are intentionally not resolved here. Executor DNS/vipserver
+    resolution happens inside the pytest remote executor pool.
     """
     cfg = _load_pyproject(rootdir).get("tool", {}).get("rtp-llm", {}).get("remote", {})
     if not cfg:
-        return None, None
+        return ReapiEndpointConfig(None, None)
 
-    cas_host = cfg.get(f"cas-{env}", "")
-    cas_port = int(cfg.get("cas-port", 50051))
-    executor_host = cfg.get(f"executor-{env}", "")
-    executor_port = int(cfg.get("executor-port", 50052))
-
-    if not cas_host or not executor_host:
-        log.warning("No %s endpoints configured in [tool.rtp-llm.remote]", env)
-        return None, None
-
-    return _resolve_host(executor_host, executor_port), _resolve_host(
-        cas_host, cas_port
+    cas_ep = _configured_endpoint(
+        cfg,
+        key_prefix="cas",
+        env=env,
+        port_key="cas-port",
+        default_port=50051,
     )
+    executor_ep = _configured_endpoint(
+        cfg,
+        key_prefix="executor",
+        env=env,
+        port_key="executor-port",
+        default_port=50052,
+    )
+
+    if not cas_ep or not executor_ep:
+        log.warning("No %s endpoints configured in [tool.rtp-llm.remote]", env)
+        return ReapiEndpointConfig(None, None)
+
+    fallback_executor_ep = None
+    if env == "online":
+        fallback_executor_ep = _configured_endpoint(
+            cfg,
+            key_prefix="executor",
+            env="daily",
+            port_key="executor-port",
+            default_port=50052,
+        )
+        if fallback_executor_ep == executor_ep:
+            fallback_executor_ep = None
+
+    return ReapiEndpointConfig(executor_ep, cas_ep, fallback_executor_ep)
+
+
+def resolve_default_reapi_endpoints(
+    rootdir: Path, env: str = "daily"
+) -> Tuple[Optional[str], Optional[str]]:
+    """Compatibility wrapper returning executor/cas endpoints only."""
+    endpoints = resolve_default_reapi_endpoint_config(rootdir, env=env)
+    return endpoints.executor, endpoints.cas
 
 
 def get_pytest_ignore_args(rootdir: Path) -> List[str]:
