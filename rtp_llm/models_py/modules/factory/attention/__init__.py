@@ -86,6 +86,7 @@ else:
         )
         DECODE_MHA_IMPS.extend([FlashInferTRTLLMDecodeImpl])
         DECODE_MHA_IMPS.append(get_xqa_impl())
+        DECODE_MHA_IMPS.append(PyFlashinferDecodeImpl)
 
         from rtp_llm.models_py.modules.factory.attention.cuda_mla_impl.flashinfer_mla_wrapper import (
             MlaFlashInferDecodeImpl,
@@ -115,18 +116,47 @@ else:
         except (ImportError, AttributeError, ValueError):
             pass  # Skip SparseMlaImpl if CUDA < 12.9 or flash_mla not available
 
-    from rtp_llm.models_py.modules.factory.attention.cuda_impl.py_flashinfer_mha import (
-        PyFlashinferDecodeImpl,
-        PyFlashinferPagedPrefillImpl,
-        PyFlashinferPrefillImpl,
-    )
+        # py_flashinfer_mha and prefill_cp_flashinfer hard-import flashinfer
+        # at module top-level; they're CUDA-only and must NOT load on
+        # CPU/Ppu/Yitian/ArmCpu test workers (where flashinfer is not pip-
+        # installed, so collection used to crash with ModuleNotFoundError).
+        # Pulled inside the `device_type == DeviceType.Cuda` branch so the
+        # else-of-ROCm fallback path stays import-safe.
+        # NOTE: PyFlashinfer{Prefill,Paged,Decode}Impl are already registered
+        # in the extend([...]) above (lines 75-87); this block only adds
+        # CPFlashInferImpl. The earlier duplicate appends caused
+        # PyFlashinfer* impls to be tried twice in the dispatcher.
+        from rtp_llm.models_py.modules.factory.attention.cuda_cp_impl.prefill_cp_flashinfer import (
+            CPFlashInferImpl,
+        )
 
-    PREFILL_MHA_IMPS.append(PyFlashinferPrefillImpl)
-    PREFILL_MHA_IMPS.append(PyFlashinferPagedPrefillImpl)
-    DECODE_MHA_IMPS.append(PyFlashinferDecodeImpl)
+        PREFILL_MHA_IMPS.append(CPFlashInferImpl)
 
-    from rtp_llm.models_py.modules.factory.attention.cuda_cp_impl.prefill_cp_flashinfer import (
-        CPFlashInferImpl,
-    )
 
-    PREFILL_MHA_IMPS.append(CPFlashInferImpl)
+def _validate_impl_names() -> None:
+    """Assert every registered impl has a non-empty NAME.
+
+    Without NAME, attn_factory.get_fmha_impl explicit dispatch
+    (--attn_backend=<name>) silently fails to find the impl and raises a
+    generic "can not find mha type" error. This check moves that failure to
+    import time so misregistration is caught in CI / dev-loop, not when a
+    user types the flag.
+    """
+    for registry_name, registry in (
+        ("PREFILL_MHA_IMPS", PREFILL_MHA_IMPS),
+        ("DECODE_MHA_IMPS", DECODE_MHA_IMPS),
+        ("PREFILL_MLA_IMPS", PREFILL_MLA_IMPS),
+        ("DECODE_MLA_IMPS", DECODE_MLA_IMPS),
+    ):
+        for cls in registry:
+            name = getattr(cls, "NAME", "")
+            if not name:
+                raise RuntimeError(
+                    f"Impl class {cls.__module__}.{cls.__name__} registered "
+                    f"in {registry_name} has empty NAME — set a backend NAME "
+                    f"matching the help text in fmha_group_args.py, or remove "
+                    f"the class from the registry."
+                )
+
+
+_validate_impl_names()
