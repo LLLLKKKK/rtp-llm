@@ -1,3 +1,5 @@
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from rtp_llm.test.remote_tests import endpoint_info, remote_exec_rtp
@@ -6,6 +8,9 @@ from rtp_llm.test.remote_tests.executor import ExecutionResult, FailoverRemoteEx
 
 class _FakeCAS:
     grpc_uri = "grpc://cas.service:50051"
+
+    def download_blob(self, digest):
+        return b""
 
 
 class _FakeExecutor:
@@ -208,3 +213,55 @@ def test_failover_does_not_retry_test_failures(monkeypatch):
     assert result.exit_code == 1
     assert _FakeExecutor.endpoints == ["grpc://10.0.0.1:50052"]
     assert _FakeExecutor.cancelled == []
+
+
+def test_failover_executor_does_not_close_concurrent_actions(monkeypatch):
+    monkeypatch.setattr(
+        endpoint_info,
+        "resolve_ipv4_addresses",
+        lambda host, port: ["10.0.0.1"],
+    )
+    started = []
+    all_started = threading.Event()
+    release = threading.Event()
+    lock = threading.Lock()
+
+    class _BlockingExecutor:
+        closed = []
+
+        def __init__(self, endpoint, cas, metadata):
+            self.grpc_uri = endpoint
+            self.reapi_targets_combined = f"cas={cas.grpc_uri} | executor={endpoint}"
+
+        def execute(self, **kwargs):
+            with lock:
+                started.append(self.grpc_uri)
+                if len(started) == 2:
+                    all_started.set()
+            assert release.wait(timeout=5)
+            return ExecutionResult(exit_code=0)
+
+        def close(self):
+            self.closed.append(self.grpc_uri)
+
+    executor = FailoverRemoteExecutor(
+        "grpc://scheduler.vipserver:50052",
+        _FakeCAS(),
+        enabled=True,
+        max_failovers=1,
+        executor_factory=_BlockingExecutor,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(executor.execute, command=["bash", "-c", "true"])
+        second = pool.submit(executor.execute, command=["bash", "-c", "true"])
+        assert all_started.wait(timeout=5)
+        assert _BlockingExecutor.closed == []
+        release.set()
+        assert first.result(timeout=5).exit_code == 0
+        assert second.result(timeout=5).exit_code == 0
+
+    assert _BlockingExecutor.closed == [
+        "grpc://10.0.0.1:50052",
+        "grpc://10.0.0.1:50052",
+    ]

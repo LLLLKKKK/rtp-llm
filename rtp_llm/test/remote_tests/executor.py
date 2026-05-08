@@ -614,18 +614,15 @@ class FailoverRemoteExecutor:
         self.enabled = enabled
         self.max_failovers = max(0, int(max_failovers))
         self.executor_factory = executor_factory
-        self._executor: Optional[RemoteExecutor] = None
         self.reapi_targets_combined = combine_reapi_endpoints(
             cas.grpc_uri,
             self.pool.current_endpoint(),
         )
 
     def _new_executor(self, endpoint: str) -> RemoteExecutor:
-        if self._executor is not None:
-            self._executor.close()
-        self._executor = self.executor_factory(endpoint, self.cas, self.metadata)
-        self.reapi_targets_combined = self._executor.reapi_targets_combined
-        return self._executor
+        executor = self.executor_factory(endpoint, self.cas, self.metadata)
+        self.reapi_targets_combined = executor.reapi_targets_combined
+        return executor
 
     @staticmethod
     def _is_failoverable(result: ExecutionResult) -> bool:
@@ -640,43 +637,49 @@ class FailoverRemoteExecutor:
 
         while True:
             executor = self._new_executor(endpoint)
-            tried.append(endpoint)
-            result = executor.execute(**kwargs)
-            result.failover_attempts = attempts
-            if not self.enabled or not self._is_failoverable(result):
-                return result
-            self.pool.refresh(force=True)
-            if attempts >= self.max_failovers or len(self.pool.endpoints()) <= 1:
+            try:
+                tried.append(endpoint)
+                result = executor.execute(**kwargs)
+                result.failover_attempts = attempts
+                if not self.enabled or not self._is_failoverable(result):
+                    return result
+
+                self.pool.refresh(force=True)
+                next_endpoint = self.pool.current_endpoint()
+                if next_endpoint == endpoint:
+                    next_endpoint = self.pool.advance()
+                if attempts >= self.max_failovers or next_endpoint == endpoint:
+                    log.warning(
+                        "[EXECUTOR_FAILOVER] exhausted endpoint=%s category=%s "
+                        "operation=%s last_stage=%s tried=[%s]",
+                        endpoint,
+                        result.infra_category,
+                        result.operation_name or "n/a",
+                        result.last_stage or "n/a",
+                        ",".join(tried),
+                    )
+                    return result
+
+                old_endpoint = endpoint
+                old_operation = result.operation_name
+                if old_operation:
+                    executor.cancel_operation(old_operation)
+                endpoint = next_endpoint
+                attempts += 1
                 log.warning(
-                    "[EXECUTOR_FAILOVER] exhausted endpoint=%s category=%s "
-                    "operation=%s last_stage=%s tried=[%s]",
+                    "[EXECUTOR_FAILOVER] old=%s new=%s category=%s operation=%s "
+                    "last_stage=%s will_rerun=true attempt=%d/%d",
+                    old_endpoint,
                     endpoint,
                     result.infra_category,
-                    result.operation_name or "n/a",
+                    old_operation or "n/a",
                     result.last_stage or "n/a",
-                    ",".join(tried),
+                    attempts,
+                    self.max_failovers,
                 )
-                return result
-
-            old_endpoint = endpoint
-            old_operation = result.operation_name
-            if old_operation:
-                executor.cancel_operation(old_operation)
-            endpoint = self.pool.advance(refresh=True)
-            attempts += 1
-            log.warning(
-                "[EXECUTOR_FAILOVER] old=%s new=%s category=%s operation=%s "
-                "last_stage=%s will_rerun=true attempt=%d/%d",
-                old_endpoint,
-                endpoint,
-                result.infra_category,
-                old_operation or "n/a",
-                result.last_stage or "n/a",
-                attempts,
-                self.max_failovers,
-            )
+            finally:
+                executor.close()
 
     def download_output(self, digest: re_pb2.Digest) -> str:
-        if self._executor is None:
-            self._new_executor(self.pool.current_endpoint())
-        return self._executor.download_output(digest)
+        data = self.cas.download_blob(digest)
+        return data.decode("utf-8", errors="replace")
