@@ -74,7 +74,7 @@ def validate_case(
     # LOAD_PYTHON_MODEL=1 paths that read TP_SIZE from env).
     if not smoke_args:
         env_strs = envs if isinstance(envs, list) else []
-        for d in (envs.values() if isinstance(envs, dict) else ()):
+        for d in envs.values() if isinstance(envs, dict) else ():
             env_strs.extend(d)
         joined = " ".join(env_strs)
         if "WORLD_SIZE" not in joined and "TP_SIZE" not in joined:
@@ -124,15 +124,17 @@ def validate_manifest(
     referenced_suites = light | full
     missing = referenced_suites - declared_suites
     if missing:
-        errors.append(f"composite suites reference unknown suite names: {sorted(missing)}")
+        errors.append(
+            f"composite suites reference unknown suite names: {sorted(missing)}"
+        )
 
     for suite_name, suite in smoke_tests.items():
         if not isinstance(suite, Mapping):
-            errors.append(f"[{suite_name}] suite must be dict-of-cases, got {type(suite).__name__}")
+            errors.append(
+                f"[{suite_name}] suite must be dict-of-cases, got {type(suite).__name__}"
+            )
             continue
         for case_name, config in suite.items():
-            errors.extend(
-                validate_case(suite_name, case_name, config, data_root_dir)
-            )
+            errors.extend(validate_case(suite_name, case_name, config, data_root_dir))
 
     return errors

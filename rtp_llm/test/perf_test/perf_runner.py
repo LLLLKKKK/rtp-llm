@@ -32,9 +32,7 @@ def build_perf_params(pytest_module, perf_tests: dict):
         gpu_count = config.get("gpu_count", 1)
         marks.append(pytest_module.mark.gpu(type=gpu_type, count=gpu_count))
 
-        params.append(
-            pytest_module.param(test_name, config, id=test_name, marks=marks)
-        )
+        params.append(pytest_module.param(test_name, config, id=test_name, marks=marks))
     return params
 
 

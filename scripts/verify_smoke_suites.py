@@ -49,8 +49,13 @@ def _validate_dir(suites_dir: Path, data_root_dir: str) -> List[str]:
         except Exception as e:
             errors.append(f"[{suite_name}] failed to load: {e}")
 
-    composite_suites = {"maga_model_smoke_full": list(smoke_tests.keys()), "maga_model_smoke_light": []}
-    errors.extend(validation.validate_manifest(smoke_tests, composite_suites, data_root_dir))
+    composite_suites = {
+        "maga_model_smoke_full": list(smoke_tests.keys()),
+        "maga_model_smoke_light": [],
+    }
+    errors.extend(
+        validation.validate_manifest(smoke_tests, composite_suites, data_root_dir)
+    )
     return errors
 
 
@@ -69,7 +74,9 @@ def main() -> int:
         oss_data_root = str(gho / "rtp_llm" / "test" / "smoke")
         oss_errors = _validate_dir(oss_suites, oss_data_root)
         if oss_errors:
-            print(f"=== OSS smoke suites: {len(oss_errors)} error(s) ===", file=sys.stderr)
+            print(
+                f"=== OSS smoke suites: {len(oss_errors)} error(s) ===", file=sys.stderr
+            )
             for e in oss_errors:
                 print(f"  {e}", file=sys.stderr)
             all_errors.extend(oss_errors)

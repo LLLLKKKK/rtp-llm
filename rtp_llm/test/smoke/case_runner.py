@@ -276,6 +276,7 @@ class CaseRunner(object):
             # a top-level Bazel output into rtp_llm/libs/kv_cache_manager_server/bin/.
             # Resolve via package introspection so it works regardless of cwd.
             import rtp_llm
+
             libs_dir = os.path.join(os.path.dirname(rtp_llm.__file__), "libs")
             server_path = os.path.join(libs_dir, "kv_cache_manager_server")
             kvcm_src_logs_path = os.path.join(os.getcwd(), "rtp_llm/logs")
