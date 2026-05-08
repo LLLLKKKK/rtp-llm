@@ -32,13 +32,13 @@
             "result": {
                 "response_batch": [
                     {
-                        "response": "\n\nThe **CAP Theorem** (also known as the **Brewer's Theorem**)"
+                        "response": "\n\nThe **CAP Theorem** (also known as **Brewer's Theorem**) is"
                     },
                     {
-                        "response": "\n\nThe **CAP Theorem** (also known as the **Brewer's Theorem**)"
+                        "response": "\n\nThe **CAP Theorem** (also known as **Brewer's Theorem**) is"
                     },
                     {
-                        "response": "\n\nThe **CAP Theorem** (also known as the **Brewer's Theorem**)"
+                        "response": "\n\nThe **CAP Theorem** (also known as **Brewer's Theorem**) is"
                     }
                 ]
             }
