@@ -1,11 +1,23 @@
 import logging
+import os
+
+import torch
 
 from librtp_compute_ops import *
 from librtp_compute_ops.rtp_llm_ops import *
 
-from rtp_llm.models_py.utils.arch import is_cuda
 
-if is_cuda():
+def _is_cuda() -> bool:
+    if not torch.cuda.is_available():
+        return False
+    if getattr(torch.version, "hip", None) is not None:
+        return False
+    if os.environ.get("PPU_HOME") or "ppu" in getattr(torch, "__version__", "").lower():
+        return False
+    return True
+
+
+if _is_cuda():
     logging.info("Use rtp_kernel FusedRopeKVCacheOp on CUDA device.")
 
     from .fused_rope_kvcache_op import (
