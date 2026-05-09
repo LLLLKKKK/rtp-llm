@@ -59,6 +59,25 @@ def test_executor_pool_resolves_hostname_inside_remote_framework(monkeypatch):
     assert pool.advance() == "grpc://10.0.0.2:50052"
 
 
+def test_executor_pool_samples_single_ip_vipserver_answers(monkeypatch):
+    answers = iter([["10.0.0.1"], ["10.0.0.2"]])
+
+    monkeypatch.setattr(endpoint_info, "_FORCED_RESOLVE_SLEEP_SECONDS", 0)
+    monkeypatch.setattr(
+        endpoint_info,
+        "resolve_ipv4_addresses",
+        lambda host, port: next(answers, ["10.0.0.2"]),
+    )
+
+    pool = endpoint_info.ExecutorEndpointPool("grpc://scheduler.vipserver:50052")
+
+    assert pool.endpoints() == [
+        "grpc://10.0.0.1:50052",
+        "grpc://10.0.0.2:50052",
+    ]
+    assert pool.advance() == "grpc://10.0.0.2:50052"
+
+
 def test_executor_pool_falls_back_when_primary_hostname_unresolved(monkeypatch):
     def fake_resolve(host, port):
         if host == "scheduler.vipserver":

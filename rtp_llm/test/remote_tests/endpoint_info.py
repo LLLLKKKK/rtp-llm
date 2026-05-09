@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 log = logging.getLogger(__name__)
+_FORCED_RESOLVE_SAMPLES = 3
+_FORCED_RESOLVE_SLEEP_SECONDS = 0.05
 
 
 def _split_host_port(grpc_uri: str) -> Tuple[str, int]:
@@ -112,13 +114,27 @@ class ExecutorEndpointPool:
         if self.spec.is_literal_ip:
             resolved = [self.spec.host]
         else:
-            resolved = resolve_ipv4_addresses(self.spec.host, self.spec.port)
+            resolved: List[str] = []
+            sample_count = _FORCED_RESOLVE_SAMPLES if force else 1
+            for sample_idx in range(sample_count):
+                for ip in resolve_ipv4_addresses(self.spec.host, self.spec.port):
+                    if ip not in resolved:
+                        resolved.append(ip)
+                if len(resolved) > 1 or sample_idx == sample_count - 1:
+                    break
+                time.sleep(_FORCED_RESOLVE_SLEEP_SECONDS)
             if not resolved and self.fallback_spec is not None:
                 active_spec = self.fallback_spec
                 if active_spec.is_literal_ip:
                     resolved = [active_spec.host]
                 else:
-                    resolved = resolve_ipv4_addresses(active_spec.host, active_spec.port)
+                    for sample_idx in range(sample_count):
+                        for ip in resolve_ipv4_addresses(active_spec.host, active_spec.port):
+                            if ip not in resolved:
+                                resolved.append(ip)
+                        if len(resolved) > 1 or sample_idx == sample_count - 1:
+                            break
+                        time.sleep(_FORCED_RESOLVE_SLEEP_SECONDS)
                 log.warning(
                     "[EXECUTOR_POOL] primary host %s:%d unresolved; "
                     "falling back to %s:%d",
@@ -131,6 +147,11 @@ class ExecutorEndpointPool:
                 # Let gRPC attempt hostname resolution so local/dev setups still
                 # get a useful error when DNS/vipserver is unavailable.
                 resolved = [active_spec.host]
+
+        if force and resolved and active_spec == self._active_spec:
+            for host in self._hosts:
+                if host not in resolved:
+                    resolved.append(host)
 
         if resolved != self._hosts or active_spec != self._active_spec:
             previous = self.current_endpoint() if self._hosts else None
