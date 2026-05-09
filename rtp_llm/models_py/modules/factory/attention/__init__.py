@@ -47,7 +47,7 @@ if device_type == DeviceType.ROCm:
     DECODE_MHA_IMPS.append(AiterDecodeImplNonAsm)
 else:
     # currently append early means impl has higher priority
-    if device_type == DeviceType.Cuda:
+    if device_type in (DeviceType.Cuda, DeviceType.Ppu):
         from rtp_llm.models_py.modules.factory.attention.cuda_headwise_impl.headwise import (
             HeadWisePrefillImpl,
         )
@@ -68,9 +68,10 @@ else:
             FlashInferTRTLLMPrefillImpl,
             FlashInferTRTLLMSpecDecodeImpl,
         )
-        from rtp_llm.models_py.modules.factory.attention.cuda_impl.xqa import (
-            get_xqa_impl,
-        )
+        if device_type == DeviceType.Cuda:
+            from rtp_llm.models_py.modules.factory.attention.cuda_impl.xqa import (
+                get_xqa_impl,
+            )
 
         PREFILL_MHA_IMPS.extend(
             [
@@ -85,7 +86,8 @@ else:
             ]
         )
         DECODE_MHA_IMPS.extend([FlashInferTRTLLMDecodeImpl])
-        DECODE_MHA_IMPS.append(get_xqa_impl())
+        if device_type == DeviceType.Cuda:
+            DECODE_MHA_IMPS.append(get_xqa_impl())
         DECODE_MHA_IMPS.append(PyFlashinferDecodeImpl)
 
         from rtp_llm.models_py.modules.factory.attention.cuda_mla_impl.flashinfer_mla_wrapper import (
@@ -117,10 +119,10 @@ else:
             pass  # Skip SparseMlaImpl if CUDA < 12.9 or flash_mla not available
 
         # py_flashinfer_mha and prefill_cp_flashinfer hard-import flashinfer
-        # at module top-level; they're CUDA-only and must NOT load on
-        # CPU/Ppu/Yitian/ArmCpu test workers (where flashinfer is not pip-
+        # at module top-level; they're CUDA/PPU-only and must NOT load on
+        # CPU/Yitian/ArmCpu test workers (where flashinfer is not pip-
         # installed, so collection used to crash with ModuleNotFoundError).
-        # Pulled inside the `device_type == DeviceType.Cuda` branch so the
+        # Pulled inside the CUDA/PPU branch so the
         # else-of-ROCm fallback path stays import-safe.
         # NOTE: PyFlashinfer{Prefill,Paged,Decode}Impl are already registered
         # in the extend([...]) above (lines 75-87); this block only adds

@@ -1,4 +1,5 @@
 import os
+import sys
 from enum import Enum
 from typing import Optional
 
@@ -31,6 +32,17 @@ def set_default_data_root(prefer: DataRoot) -> str:
     """
     global REL_PATH
     REL_PATH = compute_smoke_rel_path(_ABS_PKG, prefer=prefer)
+    for module_name in (
+        "rtp_llm.test.smoke.normal_comparer",
+        "rtp_llm.test.smoke.embedding_comparer",
+        "rtp_llm.test.smoke.openai_comparer",
+        "rtp_llm.test.smoke.tau2_bench_comparer",
+        "rtp_llm.test.smoke.utils",
+        "rtp_llm.test.smoke_framework.runner",
+    ):
+        module = sys.modules.get(module_name)
+        if module is not None and hasattr(module, "REL_PATH"):
+            setattr(module, "REL_PATH", REL_PATH)
     return REL_PATH
 
 

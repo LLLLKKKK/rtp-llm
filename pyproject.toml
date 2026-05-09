@@ -301,6 +301,11 @@ description = "Frontend Python UT (py-ut-frontend)"
 paths = ["rtp_llm/frontend/test", "rtp_llm/test/frontend_test"]
 markexpr = "not manual and not rocm and not cpu"
 
+[tool.rtp_llm.pytest_ci.profiles.rtpci_unit]
+description = "rtpci unit tests"
+paths = ["../internal_source/.cursor/skills/_shared/rtpci/tests/"]
+markexpr = "not manual"
+
 # -------- OSS smoke profiles (drive suite files in rtp_llm/test/smoke/suites/) --------
 [tool.rtp_llm.pytest_ci.profiles.smoke_h20_oss]
 description = "OSS smoke H20 (smoke-h20-oss)"
