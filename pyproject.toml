@@ -360,4 +360,5 @@ markexpr = "manual and smoke and MI308X_ROCM7"
 [tool.rtp_llm.pytest_ci.profiles.perf_sm9x]
 description = "Performance tests on H20 / SM9x (perf-test)"
 paths = ["../internal_source/rtp_llm/test/perf_test/suites/"]
+gpu_type = "H20"
 markexpr = "manual and perf and H20"
