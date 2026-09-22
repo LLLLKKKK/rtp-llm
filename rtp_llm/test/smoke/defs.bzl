@@ -1,14 +1,13 @@
-
 def extract_data(envs):
     data = []
-    prefix = 'internal_source/rtp_llm/test/smoke/'
+    prefix = "internal_source/rtp_llm/test/smoke/"
     for env in envs:
-        if env.startswith('MULTI_TASK_PROMPT='):
+        if env.startswith("MULTI_TASK_PROMPT="):
             # Use index('=')+1 instead of split('=')[1] so a value containing
             # '=' (e.g. a query-string or kv-style fragment) is preserved in
             # full. Starlark has no maxsplit, so split() would silently drop
             # everything after the first '='.
-            data.append(env[env.index('=') + 1 + len(prefix):])
+            data.append(env[env.index("=") + 1 + len(prefix):])
     return data
 
 def extract_multi_task_prompt_data(smoke_args):
@@ -17,9 +16,9 @@ def extract_multi_task_prompt_data(smoke_args):
     args_to_check = []
 
     # Collect all argument strings to check
-    if type(smoke_args) == 'string':
+    if type(smoke_args) == "string":
         args_to_check = [smoke_args]
-    elif type(smoke_args) == 'dict':
+    elif type(smoke_args) == "dict":
         args_to_check = smoke_args.values()
 
     # Extract --multi_task_prompt paths
@@ -27,10 +26,10 @@ def extract_multi_task_prompt_data(smoke_args):
         if "--multi_task_prompt" in args_str:
             tokens = args_str.split(" ")
             for i in range(len(tokens)):
-                if tokens[i] == '--multi_task_prompt' and i + 1 < len(tokens):
+                if tokens[i] == "--multi_task_prompt" and i + 1 < len(tokens):
                     path = tokens[i + 1]
-                    if path.startswith('internal_source/rtp_llm/test/smoke/'):
-                        relative_path = path[len('internal_source/rtp_llm/test/smoke/'):]
+                    if path.startswith("internal_source/rtp_llm/test/smoke/"):
+                        relative_path = path[len("internal_source/rtp_llm/test/smoke/"):]
                         if relative_path not in data:
                             data.append(relative_path)
                     break
@@ -81,9 +80,10 @@ def get_world_size_from_smoke_args(smoke_args):
 
 def get_aiter_envs(name, envs):
     for env in envs:
-        k, _ = env.split('=')
-        if 'AITER_ASM_DIR' == k:
+        k, _ = env.split("=")
+        if "AITER_ASM_DIR" == k:
             return []
+
     # relative path to cwd where rtp_llm.start_server is launched in MagaServerManager
     # files in bazel-out/k8-opt/bin
     return ["AITER_ASM_DIR=../../../../../../../bin/internal_source/rtp_llm/test/smoke/" + name + ".runfiles/pip_gpu_rocm_torch_aiter/site-packages/aiter_meta/hsa/"]
@@ -107,15 +107,19 @@ SMOKE_FRAMEWORK_DEPS = [
 
 SMOKE_CASE_TAGS = ["smoke_case", "manual"]
 
-def custom_smoke_test(name, main, smoke_args="", args=[], gpu_type=[], tags=[], data=[], deps=[]):
+def _require_single_gpu_type(macro_name, name, gpu_type):
+    if len(gpu_type) != 1:
+        fail("%s %s: gpu_type must contain exactly one hardware tag, got %s" % (macro_name, name, gpu_type))
+    return gpu_type[0]
+
+def custom_smoke_test(name, main, smoke_args = "", args = [], gpu_type = [], tags = [], data = [], deps = []):
     """Defines a smoke_case py_test with its own unittest main.
 
     Bypasses the entry.py framework while inheriting the framework deps, tags,
     GPU exec_properties and legacy_create_init guarantees. smoke_args is the
     single source for GPU reservation, server arguments and WORLD_SIZE."""
+    gpu = _require_single_gpu_type("custom_smoke_test", name, gpu_type)
     gpu_count = get_world_size_from_smoke_args(smoke_args)
-    if not gpu_type:
-        fail("custom_smoke_test %s: gpu_type must be non-empty" % name)
     native.py_test(
         name = name,
         main = main,
@@ -134,53 +138,66 @@ def custom_smoke_test(name, main, smoke_args="", args=[], gpu_type=[], tags=[], 
         # --test_env. Declared here only: these are the remote-cache smoke cases.
         env_inherit = ["REMOTE_JIT_DIR"],
         exec_properties = {
-            "gpu": gpu_type[0],
+            "gpu": gpu,
             "gpu_count": str(gpu_count),
         },
-        tags = tags + SMOKE_CASE_TAGS + gpu_type,
+        tags = tags + SMOKE_CASE_TAGS + [gpu],
         legacy_create_init = 0,
         visibility = ["//visibility:public"],
     )
     return name
 
-def smoke_test(name, task_info, tags=[], envs=[], gpu_type=[], data=[], smoke_args="",
-               kvcm_envs=[], sleep_time_qr=0, kill_remote=False, concurrency_test=False):
-    path = '/'.join(task_info.split('/')[:-1])
-    data = data + native.glob([path + '/*.pt',
-                               path + '/*.jpg',
-                               path + '/*.jpeg',
-                               path + '/*.mp4'])
+def smoke_test(
+        name,
+        task_info,
+        tags = [],
+        envs = [],
+        gpu_type = [],
+        data = [],
+        smoke_args = "",
+        kvcm_envs = [],
+        sleep_time_qr = 0,
+        kill_remote = False,
+        concurrency_test = False):
+    gpu = _require_single_gpu_type("smoke_test", name, gpu_type)
+    path = "/".join(task_info.split("/")[:-1])
+    data = data + native.glob([
+        path + "/*.pt",
+        path + "/*.jpg",
+        path + "/*.jpeg",
+        path + "/*.mp4",
+    ])
     multi_task_data = extract_multi_task_prompt_data(smoke_args)
     for item in multi_task_data:
         if item not in data:
             data.append(item)
     gpu_count = 0
-    if type(smoke_args) == 'dict':
+    if type(smoke_args) == "dict":
         part_env_list = []
         for k, role_args in smoke_args.items():
             v = envs.get(k, []) if type(envs) == "dict" else []
             world_size = get_world_size_from_smoke_args(role_args)
-            v = v + ['WORLD_SIZE=' + str(world_size)]
+            v = v + ["WORLD_SIZE=" + str(world_size)]
             gpu_count += world_size
-            part_env_list.append("\"" + k + "\": " + "[" + ",".join(["\"" + x + "\"" for x in v]) +  "]")
+            part_env_list.append("\"" + k + "\": " + "[" + ",".join(["\"" + x + "\"" for x in v]) + "]")
             data.extend(extract_data(v))
-        env_str = "'{" + ','.join(part_env_list) + "}'"
+        env_str = "'{" + ",".join(part_env_list) + "}'"
     else:
         envs_list = envs if type(envs) == "list" else []
         world_size = get_world_size_from_smoke_args(smoke_args)
-        envs_list = envs_list + ['WORLD_SIZE=' + str(world_size)]
+        envs_list = envs_list + ["WORLD_SIZE=" + str(world_size)]
         gpu_count += world_size
-        env_str = "[" + ",".join(["\\\"" + x + "\\\"" for x in envs_list]) +  "]"
+        env_str = "[" + ",".join(["\\\"" + x + "\\\"" for x in envs_list]) + "]"
         data.extend(extract_data(envs_list))
 
-    if type(smoke_args) == 'string':
+    if type(smoke_args) == "string":
         smoke_args_str = "\"" + smoke_args + "\""
-    elif type(smoke_args) == 'dict':
+    elif type(smoke_args) == "dict":
         part_args_list = []
         for k, v in smoke_args.items():
             part_args_list.append("\"" + k + "\": " + "\"" + v + "\"")
-        smoke_args_str = "'{" + ','.join(part_args_list) + "}'"
-    elif type(smoke_args) == 'list':
+        smoke_args_str = "'{" + ",".join(part_args_list) + "}'"
+    elif type(smoke_args) == "list":
         smoke_args_str = "\"" + " ".join(smoke_args) + "\""
     else:
         fail("unknown smoke_args type: " + str(type(smoke_args)))
@@ -213,22 +230,31 @@ def smoke_test(name, task_info, tags=[], envs=[], gpu_type=[], data=[], smoke_ar
             "data/prompt_candidates.json",
             "//rtp_llm:sdk",
         ],
-        tags = tags + SMOKE_CASE_TAGS + gpu_type,
-        legacy_create_init=0,
+        tags = tags + SMOKE_CASE_TAGS + [gpu],
+        legacy_create_init = 0,
         args = [
-            "--suite_name", name,
-            "--task_info", task_info,
-            "--envs", env_str,
-            "--gpu_card", gpu_type[0],
-            "--smoke_args", smoke_args_str,
-            "--kvcm_envs", kvcm_envs_str,
-            "--sleep_time_qr", str(sleep_time_qr),
-            "--kill_remote", str(kill_remote),
-            "--concurrency_test", str(concurrency_test),
+            "--suite_name",
+            name,
+            "--task_info",
+            task_info,
+            "--envs",
+            env_str,
+            "--gpu_card",
+            gpu,
+            "--smoke_args",
+            smoke_args_str,
+            "--kvcm_envs",
+            kvcm_envs_str,
+            "--sleep_time_qr",
+            str(sleep_time_qr),
+            "--kill_remote",
+            str(kill_remote),
+            "--concurrency_test",
+            str(concurrency_test),
         ],
         exec_properties = {
-            'gpu':gpu_type[0],
-            'gpu_count': str(gpu_count),
+            "gpu": gpu,
+            "gpu_count": str(gpu_count),
         },
         env = {
             "GPU_COUNT": str(gpu_count),

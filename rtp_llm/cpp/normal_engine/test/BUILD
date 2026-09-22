@@ -1,5 +1,5 @@
-load("//:def.bzl", "cc_test_wrapper", "copts")
 load("@arch_config//:arch_select.bzl", "torch_deps")
+load("//:def.bzl", "cc_test_wrapper", "copts")
 
 cc_test = cc_test_wrapper
 
@@ -21,38 +21,39 @@ cuda13_torch_link_deps = select({
 
 cc_library(
     name = "mock_engine",
-    hdrs = [
-        "MockEngine.h"
-    ],
     srcs = [
     ],
+    hdrs = [
+        "MockEngine.h",
+    ],
     copts = test_copts,
-    deps =  [
-        "//rtp_llm/cpp/testing:device_test_utils",
-        "//rtp_llm/models_py/bindings/cuda/ops:cuda_impl",
-        "//rtp_llm/cpp/normal_engine:normal_engine",
-        "//rtp_llm/cpp/models:models",
+    visibility = ["//visibility:public"],
+    deps = [
         "//rtp_llm/cpp/config:config_modules",
         "//rtp_llm/cpp/engine_base:weights_converter",
+        "//rtp_llm/cpp/models",
+        "//rtp_llm/cpp/normal_engine",
+        "//rtp_llm/cpp/testing:device_test_utils",
+        "//rtp_llm/models_py/bindings/cuda/ops:cuda_impl",
         "@com_google_googletest//:gtest",
         "@com_google_googletest//:gtest_main",
         "@local_config_cuda//cuda:cuda_headers",
         "@local_config_cuda//cuda:cudart",
     ] + torch_deps() + cuda13_torch_link_deps,
     alwayslink = 1,
-    visibility = ["//visibility:public"],
 )
 
 cc_test(
     name = "normal_output_dispatcher_test",
     srcs = ["NormalOutputDispatcherTest.cc"],
     copts = test_copts,
+    exec_properties = {"gpu": "A10_CU13"},
+    tags = ["A10_CU13"],
     deps = [
-        "//rtp_llm/cpp/normal_engine:normal_engine",
+        "//rtp_llm/cpp/normal_engine",
         "@com_google_googletest//:gtest",
         "@com_google_googletest//:gtest_main",
     ],
-    exec_properties = {'gpu':'A10'},
 )
 
 cc_test(
@@ -60,22 +61,23 @@ cc_test(
     srcs = glob([
         "NormalBatchStreamProcessorTest.cc",
     ]),
-    data = [],
     copts = test_copts,
+    data = [],
+    env = {
+        "TEST_USING_DEVICE": "CUDA",
+    },
+    exec_properties = {"gpu": "A10_CU13"},
+    tags = ["A10_CU13"],
     deps = [
+        "//rtp_llm/cpp/models",
+        "//rtp_llm/cpp/normal_engine",
         "//rtp_llm/cpp/testing:device_test_utils",
         "//rtp_llm/models_py/bindings/cuda/ops:cuda_impl",
-        "//rtp_llm/cpp/normal_engine:normal_engine",
-        "//rtp_llm/cpp/models:models",
         "@com_google_googletest//:gtest",
         "@com_google_googletest//:gtest_main",
         "@local_config_cuda//cuda:cuda_headers",
         "@local_config_cuda//cuda:cudart",
     ] + torch_deps() + cuda13_torch_link_deps,
-    env = {
-        "TEST_USING_DEVICE": "CUDA",
-    },
-    exec_properties = {'gpu':'A10'},
 )
 
 cc_test(
@@ -83,15 +85,16 @@ cc_test(
     srcs = glob([
         "EngineTest.cc",
     ]),
-    data = [],
     copts = test_copts,
-    deps =  [
-        ":mock_engine",
-    ] + cuda13_torch_link_deps,
+    data = [],
     env = {
         "TEST_USING_DEVICE": "CUDA",
     },
-    exec_properties = {'gpu':'A10'},
+    exec_properties = {"gpu": "A10_CU13"},
+    tags = ["A10_CU13"],
+    deps = [
+        ":mock_engine",
+    ] + cuda13_torch_link_deps,
 )
 
 cc_test(
@@ -100,17 +103,18 @@ cc_test(
         "AsyncRunnerTest.cc",
     ],
     copts = test_copts,
+    env = {
+        "TEST_USING_DEVICE": "CUDA",
+    },
+    exec_properties = {"gpu": "A10_CU13"},
+    tags = ["A10_CU13"],
     deps = [
+        "//rtp_llm/cpp/normal_engine",
         "//rtp_llm/cpp/testing:device_test_utils",
         "//rtp_llm/models_py/bindings/cuda/ops:cuda_impl",
-        "//rtp_llm/cpp/normal_engine:normal_engine",
         "@com_google_googletest//:gtest",
         "@com_google_googletest//:gtest_main",
         "@local_config_cuda//cuda:cuda_headers",
         "@local_config_cuda//cuda:cudart",
     ] + torch_deps() + cuda13_torch_link_deps,
-    env = {
-        "TEST_USING_DEVICE": "CUDA",
-    },
-    exec_properties = {'gpu':'A10'},
 )

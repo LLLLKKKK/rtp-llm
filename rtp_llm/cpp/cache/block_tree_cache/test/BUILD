@@ -55,27 +55,31 @@ pool_test_deps = [
 
 cc_test(
     name = "block_tree_cache_factory_test",
-    exec_properties = {"gpu": "A10"},
     testonly = True,
     srcs = ["BlockTreeCacheFactoryTest.cc"],
     copts = pool_test_copts,
-    tags = ["exclusive-if-local"],
+    env = {},
+    exec_properties = {"gpu": "A10_CU13"},
+    tags = [
+        "A10_CU13",
+        "exclusive-if-local",
+    ],
     deps = pool_test_deps + [
         ":block_tree_cache_test_utils",
-        "//rtp_llm/cpp/cache/block_tree_cache/transfer/test:block_transfer_engine_test_utils",
         "//rtp_llm/cpp/cache:kv_cache_allocator",
+        "//rtp_llm/cpp/cache/block_tree_cache/transfer/test:block_transfer_engine_test_utils",
         "//rtp_llm/cpp/testing:device_test_utils",
     ],
-    env = {},
 )
 
 cc_test(
     name = "block_tree_test",
-    exec_properties = {"gpu": "A10"},
     srcs = ["BlockTreeTest.cc"],
     copts = test_copts,
-    deps = test_deps + [":block_tree_cache_test_utils"],
     env = {},
+    exec_properties = {"gpu": "A10_CU13"},
+    tags = ["A10_CU13"],
+    deps = test_deps + [":block_tree_cache_test_utils"],
 )
 
 test_suite(
@@ -103,36 +107,42 @@ cc_library(
         "//rtp_llm/cpp/engine_base/system_prompt/test:__pkg__",
     ],
     deps = [
-        "//rtp_llm/cpp/cache/block_tree_cache/transfer/test:block_transfer_engine_test_utils",
         "//rtp_llm/cpp/cache/block_tree_cache",
         "//rtp_llm/cpp/cache/block_tree_cache:device_block_pool",
+        "//rtp_llm/cpp/cache/block_tree_cache/transfer/test:block_transfer_engine_test_utils",
         "@com_google_googletest//:gtest",
     ] + torch_deps(),
 )
 
 cc_test(
     name = "block_tree_cache_test",
-    exec_properties = {"gpu": "A10"},
     testonly = True,
     srcs = ["BlockTreeCacheTest.cc"],
     copts = test_copts,
-    tags = ["exclusive-if-local"],
+    env = {},
+    exec_properties = {"gpu": "A10_CU13"},
+    tags = [
+        "A10_CU13",
+        "exclusive-if-local",
+    ],
     deps = test_deps + [
         ":block_tree_cache_test_utils",
         "//rtp_llm/cpp/cache:cache_async_context",
     ],
-    env = {},
 )
 
 cc_test(
     name = "block_tree_cache_integration_test",
-    exec_properties = {"gpu": "A10"},
     testonly = True,
     srcs = ["BlockTreeCacheIntegrationTest.cc"],
     copts = test_copts,
-    tags = ["exclusive-if-local"],
-    deps = test_deps + [":block_tree_cache_test_utils"],
     env = {},
+    exec_properties = {"gpu": "A10_CU13"},
+    tags = [
+        "A10_CU13",
+        "exclusive-if-local",
+    ],
+    deps = test_deps + [":block_tree_cache_test_utils"],
 )
 
 cc_test(
@@ -140,13 +150,14 @@ cc_test(
     srcs = [
         "DeviceFullKVCacheGroupTest.cc",
     ],
-    data = [],
     copts = test_copts,
+    data = [],
+    env = {},
+    exec_properties = {"gpu": "H20_CU13"},
+    tags = ["H20_CU13"],
     deps = [
         "//rtp_llm/cpp/cache/test:block_pool_test_helper",
     ],
-    env = {},
-    exec_properties = {'gpu':'H20'},
 )
 
 cc_test(
@@ -154,13 +165,14 @@ cc_test(
     srcs = [
         "DeviceLinearKVCacheGroupTest.cc",
     ],
-    data = [],
     copts = test_copts,
+    data = [],
+    env = {},
+    exec_properties = {"gpu": "H20_CU13"},
+    tags = ["H20_CU13"],
     deps = [
         "//rtp_llm/cpp/cache/test:block_pool_test_helper",
     ],
-    env = {},
-    exec_properties = {'gpu':'H20'},
 )
 
 cc_test(
@@ -168,28 +180,30 @@ cc_test(
     srcs = [
         "DeviceSWAKVCacheGroupTest.cc",
     ],
-    data = [],
     copts = test_copts,
+    data = [],
+    env = {},
+    exec_properties = {"gpu": "H20_CU13"},
+    tags = ["H20_CU13"],
     deps = [
         "//rtp_llm/cpp/cache/test:block_pool_test_helper",
     ],
-    env = {},
-    exec_properties = {'gpu':'H20'},
 )
 
 cc_test(
     name = "device_swa_kv_cache_group_malloc_range_test",
-    exec_properties = {"gpu": "A10"},
     srcs = [
         "DeviceSWAKVCacheGroupMallocRangeTest.cc",
     ],
-    data = [],
     copts = test_copts,
+    data = [],
+    env = {},
+    exec_properties = {"gpu": "A10_CU13"},
+    tags = ["A10_CU13"],
     deps = [
-        "//rtp_llm/cpp/cache/block_tree_cache",
         "//rtp_llm/cpp/cache:cache_types",
+        "//rtp_llm/cpp/cache/block_tree_cache",
         "@com_google_googletest//:gtest",
         "@com_google_googletest//:gtest_main",
     ] + torch_deps() + cuda13_torch_link_deps,
-    env = {},
 )

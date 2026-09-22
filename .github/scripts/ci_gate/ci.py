@@ -4,12 +4,27 @@ import argparse
 import time
 
 from .common import BRANCH_REF, CI_TRIGGER_URL, PIPELINE_ID, PROJECT_ID, GateError, log, write_output
-from .ci_service import ci_service_request, get_branch_info, parse_ci_status, retrieve_task_status
+from .ci_service import (
+    ci_service_request,
+    get_branch_info,
+    parse_ci_status,
+    parse_required_job_status,
+    retrieve_task_status,
+)
 
 
 def _write_pre_check_action(args, action):
     # type: (argparse.Namespace, str) -> None
     write_output("ci_action", action, getattr(args, "output_file", ""))
+
+
+def _required_job_status(args, response):
+    # type: (argparse.Namespace, dict) -> str
+    required_job = getattr(args, "required_job", "")
+    status, summary = parse_required_job_status(response, required_job)
+    if required_job:
+        log("Required job %s status: %s (%s)" % (required_job, status, summary))
+    return status
 
 
 def pre_check_status(args):
@@ -37,10 +52,19 @@ def pre_check_status(args):
 
         log("Current commitId: %s, taskId: %s" % (response.get("commitId"), response.get("taskId")))
         main_status, status_summary = parse_ci_status(response)
+        required_status = _required_job_status(args, response)
         log("Current status: %s" % status_summary)
         log("Current main status: %s" % main_status)
 
+        if required_status == "FAILED":
+            log("The required-validation job cannot satisfy the gate; will re-trigger")
+            _write_pre_check_action(args, "trigger")
+            return 1
         if main_status == "DONE":
+            if required_status != "DONE":
+                log("Completed CI does not satisfy the required-validation contract; will re-trigger")
+                _write_pre_check_action(args, "trigger")
+                return 1
             log("CI already completed successfully for this commit")
             log("Skipping CI trigger")
             _write_pre_check_action(args, "done")
@@ -57,11 +81,18 @@ def pre_check_status(args):
     log("")
     log("=== Final Result ===")
     if main_status == "RUNNING":
+        if required_status == "MISSING":
+            log("Running CI has no required-validation job; will trigger a required run")
+            _write_pre_check_action(args, "trigger")
+            return 1
         log("CI is RUNNING for this commit after %d checks, skipping trigger but waiting for result" % max_attempts)
         _write_pre_check_action(args, "wait")
         return 0
     if main_status == "PENDING":
-        log("CI stuck in PENDING after %d checks, will re-trigger" % max_attempts)
+        if required_status == "MISSING":
+            log("Pending CI has no required-validation job; will trigger a required run")
+        else:
+            log("CI stuck in PENDING after %d checks, will re-trigger" % max_attempts)
         _write_pre_check_action(args, "trigger")
         return 1
     log("CI status is %s after %d checks, allowing CI trigger" % (main_status, max_attempts))
@@ -87,9 +118,13 @@ def wait_status(args):
 
         log("Current commitId: %s, taskId: %s" % (response.get("commitId"), response.get("taskId")))
         main_status, status_summary = parse_ci_status(response)
+        required_status = _required_job_status(args, response)
         log("Current status: %s" % status_summary)
         log("Current main status: %s" % main_status)
 
+        if required_status == "FAILED":
+            log("The required-validation job failed or was skipped")
+            return 1
         if main_status == "PENDING":
             log("PENDING elapsed: %ds / %ds" % (overall_elapsed, max_wait_pending_time))
             if overall_elapsed > max_wait_pending_time:
@@ -104,6 +139,9 @@ def wait_status(args):
                 raise GateError("Error: Timeout waiting for CI to finish after RUNNING (waited %d seconds)" % running_elapsed)
 
         if main_status == "DONE":
+            if required_status != "DONE":
+                log("CI completed without a successful required-validation fan-in")
+                return 1
             log("CI completed successfully")
             return 0
         if main_status == "FAILED":
@@ -138,6 +176,7 @@ def trigger_ci(args):
         "newBranch": {"name": branch_name, "ref": BRANCH_REF, "head": "UNKNOWN"},
         "params": {
             "cancel-in-progress": "true",
+            "required-validation": "true",
             "github_commit": args.commit_id,
             "github_source_repo": args.github_source_repo,
             "github_run_id": args.github_run_id,

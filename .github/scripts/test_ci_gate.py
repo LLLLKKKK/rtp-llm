@@ -9,7 +9,11 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from ci_gate.common import GateError, is_true
-from ci_gate.ci_service import collect_status_tokens, parse_ci_status
+from ci_gate.ci_service import (
+    collect_status_tokens,
+    parse_ci_status,
+    parse_required_job_status,
+)
 from ci_gate.review import (
     _check_issue_comments_qualified,
     check_review_qualified,
@@ -145,6 +149,163 @@ class TestParseCiStatus(unittest.TestCase):
             {"status": {"job1": {"status": "SUCCESS"}, "job2": {"status": "NOT_RUN"}}}
         )
         self.assertEqual(status, "DONE")
+
+
+# ---------------------------------------------------------------------------
+# ci_service.parse_required_job_status
+# ---------------------------------------------------------------------------
+class TestParseRequiredJobStatus(unittest.TestCase):
+    REQUIRED_JOB = "required-validation"
+
+    def _parse(self, response):
+        return parse_required_job_status(response, self.REQUIRED_JOB)[0]
+
+    def test_missing_job(self):
+        self.assertEqual(self._parse({"status": "SUCCESS"}), "MISSING")
+
+    def test_skipped_job_fails(self):
+        response = {"jobs": {self.REQUIRED_JOB: {"status": "SKIPPED"}}}
+        self.assertEqual(self._parse(response), "FAILED")
+
+    def test_failed_job_fails(self):
+        response = {"jobs": [{"id": self.REQUIRED_JOB, "status": "FAILED"}]}
+        self.assertEqual(self._parse(response), "FAILED")
+
+    def test_pending_and_running_jobs_do_not_pass(self):
+        for status in ("PENDING", "RUNNING"):
+            with self.subTest(status=status):
+                response = {"jobs": {self.REQUIRED_JOB: status}}
+                self.assertEqual(self._parse(response), status)
+
+    def test_successful_job_passes(self):
+        response = {"jobs": {self.REQUIRED_JOB: {"conclusion": "SUCCESS"}}}
+        self.assertEqual(self._parse(response), "DONE")
+
+    def test_supported_job_collections_pass(self):
+        for field in ("jobs", "jobStatuses", "job_statuses", "results"):
+            with self.subTest(field=field):
+                response = {
+                    field: [
+                        {"job": "pipeline/required-validation", "state": "SUCCESS"}
+                    ]
+                }
+                self.assertEqual(self._parse(response), "DONE")
+
+    def test_direct_status_map_passes(self):
+        response = {"status": {self.REQUIRED_JOB: "SUCCESS"}}
+        self.assertEqual(self._parse(response), "DONE")
+
+    def test_explicit_jobs_inside_status_payload_pass(self):
+        response = {"status": {"jobs": {self.REQUIRED_JOB: "SUCCESS"}}}
+        self.assertEqual(self._parse(response), "DONE")
+
+    def test_nested_successful_job_passes(self):
+        response = {
+            "stages": {
+                "test": {
+                    "children": [
+                        {"name": "pipeline/required-validation", "result": "SUCCESS"}
+                    ]
+                }
+            }
+        }
+        self.assertEqual(self._parse(response), "DONE")
+
+    def test_aggregate_only_success_does_not_pass(self):
+        response = {"status": {"SUCCESS": 24}}
+        self.assertEqual(self._parse(response), "MISSING")
+
+    def test_status_metadata_does_not_attest_success(self):
+        for field in ("requestParameters", "pipelineVariables", "metadata"):
+            with self.subTest(field=field):
+                response = {
+                    "status": {
+                        "status": "SUCCESS",
+                        field: {self.REQUIRED_JOB: "SUCCESS"},
+                    }
+                }
+                self.assertEqual(self._parse(response), "MISSING")
+
+    def test_generic_job_metadata_does_not_attest_success(self):
+        response = {
+            "jobs": [
+                {
+                    "name": "compile",
+                    "status": "SUCCESS",
+                    "metadata": {self.REQUIRED_JOB: "SUCCESS"},
+                }
+            ]
+        }
+        self.assertEqual(self._parse(response), "MISSING")
+
+    def test_named_record_without_own_status_does_not_pass(self):
+        response = {
+            "jobs": [
+                {
+                    "name": self.REQUIRED_JOB,
+                    "metadata": {"name": self.REQUIRED_JOB, "status": "SUCCESS"},
+                }
+            ]
+        }
+        self.assertEqual(self._parse(response), "MISSING")
+
+    def test_keyed_record_without_own_status_does_not_pass(self):
+        response = {
+            "jobs": {
+                self.REQUIRED_JOB: {"metadata": {"status": "SUCCESS"}}
+            }
+        }
+        self.assertEqual(self._parse(response), "MISSING")
+
+    def test_request_parameter_does_not_attest_aggregate_success(self):
+        response = {
+            "status": "SUCCESS",
+            "params": {"required-validation": "true"},
+        }
+        self.assertEqual(self._parse(response), "MISSING")
+
+    def test_nested_request_parameter_does_not_attest_success(self):
+        response = {
+            "status": {
+                "status": "SUCCESS",
+                "request": {"params": {"required-validation": "SUCCESS"}},
+            }
+        }
+        self.assertEqual(self._parse(response), "MISSING")
+
+    def test_request_variable_does_not_attest_success(self):
+        response = {
+            "status": {
+                "status": "SUCCESS",
+                "variables": {"required-validation": "SUCCESS"},
+            }
+        }
+        self.assertEqual(self._parse(response), "MISSING")
+
+    def test_server_validated_contract_passes(self):
+        response = {
+            "status": "SUCCESS",
+            "validatedContracts": {
+                self.REQUIRED_JOB: {"validated": True, "status": "SUCCESS"}
+            },
+        }
+        self.assertEqual(self._parse(response), "DONE")
+
+    def test_unvalidated_server_contract_fails(self):
+        response = {
+            "validatedContracts": {
+                self.REQUIRED_JOB: {"validated": False, "status": "SUCCESS"}
+            }
+        }
+        self.assertEqual(self._parse(response), "FAILED")
+
+    def test_contract_status_without_validation_fails(self):
+        response = {
+            "validatedContracts": {
+                self.REQUIRED_JOB: {"status": "SUCCESS"}
+            }
+        }
+        self.assertEqual(self._parse(response), "FAILED")
 
 
 # ---------------------------------------------------------------------------
@@ -543,10 +704,11 @@ class TestPreCheckStatus(unittest.TestCase):
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
 
-    def _run_with_output(self, mock_status, status_response):
+    def _run_with_output(self, mock_status, status_response, **arg_overrides):
         mock_status.return_value = status_response
         with tempfile.NamedTemporaryFile(mode="r+") as output:
-            result = pre_check_status(self._args(output_file=output.name))
+            arg_overrides["output_file"] = output.name
+            result = pre_check_status(self._args(**arg_overrides))
             output.seek(0)
             return result, output.read()
 
@@ -595,6 +757,104 @@ class TestPreCheckStatus(unittest.TestCase):
             self.assertEqual(result, 1)
             self.assertIn("ci_action=trigger", output.read())
 
+    @patch("ci_gate.ci.retrieve_task_status")
+    def test_aggregate_success_with_request_parameter_triggers(self, mock_status):
+        response = {
+            "status": "SUCCESS",
+            "params": {"required-validation": "true"},
+            "commitId": "abc",
+            "taskId": "1",
+        }
+        result, output = self._run_with_output(
+            mock_status, response, required_job="required-validation"
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("ci_action=trigger", output)
+
+    @patch("ci_gate.ci.retrieve_task_status")
+    def test_explicit_required_success_is_done(self, mock_status):
+        response = {
+            "status": "SUCCESS",
+            "jobs": {"required-validation": "SUCCESS"},
+            "commitId": "abc",
+            "taskId": "1",
+        }
+        result, output = self._run_with_output(
+            mock_status, response, required_job="required-validation"
+        )
+        self.assertEqual(result, 0)
+        self.assertIn("ci_action=done", output)
+
+    @patch("ci_gate.ci.retrieve_task_status")
+    def test_skipped_or_failed_required_job_triggers(self, mock_status):
+        for required_status in ("SKIPPED", "FAILED"):
+            with self.subTest(required_status=required_status):
+                response = {
+                    "status": "SUCCESS",
+                    "jobs": {"required-validation": required_status},
+                    "commitId": "abc",
+                    "taskId": "1",
+                }
+                result, output = self._run_with_output(
+                    mock_status, response, required_job="required-validation"
+                )
+                self.assertEqual(result, 1)
+                self.assertIn("ci_action=trigger", output)
+
+    @patch("ci_gate.ci.retrieve_task_status")
+    def test_failed_required_job_triggers_while_pipeline_runs(self, mock_status):
+        response = {
+            "status": "RUNNING",
+            "jobs": {"required-validation": "FAILED"},
+            "commitId": "abc",
+            "taskId": "1",
+        }
+        result, output = self._run_with_output(
+            mock_status, response, required_job="required-validation"
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("ci_action=trigger", output)
+
+    @patch("ci_gate.ci.time.sleep")
+    @patch("ci_gate.ci.retrieve_task_status")
+    def test_pending_required_job_retriggers_after_pre_check(self, mock_status, mock_sleep):
+        response = {
+            "status": "PENDING",
+            "jobs": {"required-validation": "PENDING"},
+            "commitId": "abc",
+            "taskId": "1",
+        }
+        result, output = self._run_with_output(
+            mock_status, response, required_job="required-validation"
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("ci_action=trigger", output)
+
+    @patch("ci_gate.ci.time.sleep")
+    @patch("ci_gate.ci.retrieve_task_status")
+    def test_running_required_job_waits(self, mock_status, mock_sleep):
+        response = {
+            "status": "RUNNING",
+            "jobs": {"required-validation": "RUNNING"},
+            "commitId": "abc",
+            "taskId": "1",
+        }
+        result, output = self._run_with_output(
+            mock_status, response, required_job="required-validation"
+        )
+        self.assertEqual(result, 0)
+        self.assertIn("ci_action=wait", output)
+
+    @patch("ci_gate.ci.time.sleep")
+    @patch("ci_gate.ci.retrieve_task_status")
+    def test_running_without_required_job_triggers(self, mock_status, mock_sleep):
+        response = {"status": "RUNNING", "commitId": "abc", "taskId": "1"}
+        result, output = self._run_with_output(
+            mock_status, response, required_job="required-validation"
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("ci_action=trigger", output)
+
 
 # ---------------------------------------------------------------------------
 # ci.wait_status (mocked)
@@ -630,6 +890,89 @@ class TestWaitStatus(unittest.TestCase):
         result = wait_status(self._args())
         self.assertEqual(result, 1)
         self.assertEqual(mock_status.call_count, 1)
+
+    @patch("ci_gate.ci.time.sleep")
+    @patch("ci_gate.ci.retrieve_task_status")
+    def test_aggregate_success_with_request_parameter_fails(self, mock_status, mock_sleep):
+        mock_status.return_value = {
+            "status": "SUCCESS",
+            "params": {"required-validation": "true"},
+            "commitId": "abc",
+            "taskId": "1",
+        }
+        result = wait_status(self._args(required_job="required-validation"))
+        self.assertEqual(result, 1)
+        self.assertEqual(mock_status.call_count, 1)
+
+    @patch("ci_gate.ci.time.sleep")
+    @patch("ci_gate.ci.retrieve_task_status")
+    def test_skipped_or_failed_required_job_fails(self, mock_status, mock_sleep):
+        for required_status in ("SKIPPED", "FAILED"):
+            with self.subTest(required_status=required_status):
+                mock_status.reset_mock()
+                mock_status.return_value = {
+                    "status": "SUCCESS",
+                    "jobs": {"required-validation": required_status},
+                    "commitId": "abc",
+                    "taskId": "1",
+                }
+                result = wait_status(self._args(required_job="required-validation"))
+                self.assertEqual(result, 1)
+                self.assertEqual(mock_status.call_count, 1)
+
+    @patch("ci_gate.ci.time.sleep")
+    @patch("ci_gate.ci.retrieve_task_status")
+    def test_failed_required_job_stops_wait_while_pipeline_runs(self, mock_status, mock_sleep):
+        mock_status.return_value = {
+            "status": "RUNNING",
+            "jobs": {"required-validation": "FAILED"},
+            "commitId": "abc",
+            "taskId": "1",
+        }
+        result = wait_status(self._args(required_job="required-validation"))
+        self.assertEqual(result, 1)
+        self.assertEqual(mock_status.call_count, 1)
+
+    @patch("ci_gate.ci.time.sleep")
+    @patch("ci_gate.ci.retrieve_task_status")
+    def test_pending_running_then_required_success(self, mock_status, mock_sleep):
+        mock_status.side_effect = [
+            {
+                "status": "PENDING",
+                "jobs": {"required-validation": "PENDING"},
+                "commitId": "abc",
+                "taskId": "1",
+            },
+            {
+                "status": "RUNNING",
+                "jobs": {"required-validation": "RUNNING"},
+                "commitId": "abc",
+                "taskId": "1",
+            },
+            {
+                "status": "SUCCESS",
+                "jobs": {"required-validation": "SUCCESS"},
+                "commitId": "abc",
+                "taskId": "1",
+            },
+        ]
+        result = wait_status(self._args(required_job="required-validation"))
+        self.assertEqual(result, 0)
+        self.assertEqual(mock_status.call_count, 3)
+
+    @patch("ci_gate.ci.time.sleep")
+    @patch("ci_gate.ci.retrieve_task_status")
+    def test_successful_server_contract_passes(self, mock_status, mock_sleep):
+        mock_status.return_value = {
+            "status": "SUCCESS",
+            "validated_contracts": {
+                "required-validation": {"validated": True}
+            },
+            "commitId": "abc",
+            "taskId": "1",
+        }
+        result = wait_status(self._args(required_job="required-validation"))
+        self.assertEqual(result, 0)
 
 
 # ---------------------------------------------------------------------------

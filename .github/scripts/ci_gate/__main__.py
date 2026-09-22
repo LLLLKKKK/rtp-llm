@@ -63,6 +63,7 @@ def main(argv):
     pre_check.add_argument("--max-attempts", type=int, default=6)
     pre_check.add_argument("--sleep-interval", type=int, default=20)
     pre_check.add_argument("--output-file", default="")
+    pre_check.add_argument("--required-job", default="")
 
     wait = subparsers.add_parser("wait-status")
     wait.add_argument("commit_id")
@@ -71,6 +72,7 @@ def main(argv):
     wait.add_argument("--max-wait-time", type=int, default=28800)
     wait.add_argument("--max-wait-pending-time", type=int, default=21600)
     wait.add_argument("--max-wait-running-time", type=int, default=7200)
+    wait.add_argument("--required-job", default="")
 
     trigger = subparsers.add_parser("trigger-ci")
     trigger.add_argument("commit_id")
