@@ -101,12 +101,7 @@ class DeepepWrapperConfig:
     # Generation parameters
     ll_num_max_token: int
 
-    # FFN disaggregate parameters (optional)
-    enable_ffn_disaggregate: bool = False
-    attention_tp_size: int = 0
-    attention_dp_size: int = 0
-    ffn_tp_size: int = 0
-    ffn_dp_size: int = 0
+    # Low-latency generation parameter
     ll_num_max_token_per_rank: int = 0
 
     @classmethod
@@ -124,7 +119,6 @@ class DeepepWrapperConfig:
         model_config = config_adapter.model_config
         parallelism_config = config_adapter.parallelism_config
         moe_config = config_adapter.moe_config
-        ffn_config = parallelism_config.ffn_disaggregate_config
 
         return cls(
             # Parallelism parameters
@@ -143,14 +137,6 @@ class DeepepWrapperConfig:
             use_deepep_internode=moe_config.use_deepep_internode,
             # Generation parameters
             ll_num_max_token=config_adapter.ll_num_max_token,
-            # FFN disaggregate parameters
-            enable_ffn_disaggregate=(
-                ffn_config.enable_ffn_disaggregate if ffn_config else False
-            ),
-            attention_tp_size=(ffn_config.attention_tp_size if ffn_config else 0),
-            attention_dp_size=(ffn_config.attention_dp_size if ffn_config else 0),
-            ffn_tp_size=(ffn_config.ffn_tp_size if ffn_config else 0),
-            ffn_dp_size=(ffn_config.ffn_dp_size if ffn_config else 0),
             ll_num_max_token_per_rank=ll_num_max_token_per_rank,
         )
 
@@ -176,11 +162,6 @@ class DeepepWrapperConfig:
             and self.use_deepep_low_latency == other.use_deepep_low_latency
             and self.use_deepep_internode == other.use_deepep_internode
             and self.ll_num_max_token == other.ll_num_max_token
-            and self.enable_ffn_disaggregate == other.enable_ffn_disaggregate
-            and self.attention_tp_size == other.attention_tp_size
-            and self.attention_dp_size == other.attention_dp_size
-            and self.ffn_tp_size == other.ffn_tp_size
-            and self.ffn_dp_size == other.ffn_dp_size
             and self.ll_num_max_token_per_rank == other.ll_num_max_token_per_rank
         )
 
@@ -239,7 +220,7 @@ class DeepepWrapperConfig:
 
     def __str__(self) -> str:
         """Return a string representation of the DeepepWrapperConfig."""
-        return f"DeepepWrapperConfig(ep_rank={self.ep_rank}, ep_size={self.ep_size}, tp_size={self.tp_size}, local_rank={self.local_rank}, world_size={self.world_size}, hidden_size={self.hidden_size}, expert_num={self.expert_num}, moe_k={self.moe_k}, deep_ep_num_sm={self.deep_ep_num_sm}, use_deepep_low_latency={self.use_deepep_low_latency}, use_deepep_internode={self.use_deepep_internode}, ll_num_max_token={self.ll_num_max_token}, enable_ffn_disaggregate={self.enable_ffn_disaggregate}, attention_tp_size={self.attention_tp_size}, attention_dp_size={self.attention_dp_size}, ffn_tp_size={self.ffn_tp_size}, ffn_dp_size={self.ffn_dp_size}, ll_num_max_token_per_rank={self.ll_num_max_token_per_rank})"
+        return f"DeepepWrapperConfig(ep_rank={self.ep_rank}, ep_size={self.ep_size}, tp_size={self.tp_size}, local_rank={self.local_rank}, world_size={self.world_size}, hidden_size={self.hidden_size}, expert_num={self.expert_num}, moe_k={self.moe_k}, deep_ep_num_sm={self.deep_ep_num_sm}, use_deepep_low_latency={self.use_deepep_low_latency}, use_deepep_internode={self.use_deepep_internode}, ll_num_max_token={self.ll_num_max_token}, ll_num_max_token_per_rank={self.ll_num_max_token_per_rank})"
 
 
 class DeepEPWrapper:
@@ -451,22 +432,9 @@ class DeepEPWrapper:
         """
         config = self._config
 
-        if config.use_deepep_low_latency and config.enable_ffn_disaggregate:
-            raise RuntimeError(
-                f"[rank: {config.ep_rank}] init deep_ep buffer failed, "
-                "upstream DeepEP does not support low-latency FFN disaggregation"
-            )
-        elif config.use_deepep_low_latency and not config.enable_ffn_disaggregate:
+        if config.use_deepep_low_latency:
             return DeepEPMode.LOW_LATENCY, self._init_low_latency_buffer(group)
-        elif not config.use_deepep_low_latency and not config.enable_ffn_disaggregate:
-            return DeepEPMode.NORMAL, self._init_normal_buffer(group)
-        else:
-            raise RuntimeError(
-                f"[rank: {config.ep_rank}] init deep_ep buffer failed, "
-                f"unsupported configuration: "
-                f"use_deepep_low_latency={config.use_deepep_low_latency}, "
-                f"enable_ffn_disaggregate={config.enable_ffn_disaggregate}"
-            )
+        return DeepEPMode.NORMAL, self._init_normal_buffer(group)
 
     def _init_normal_buffer(self, group: ProcessGroup) -> DeepEPBuffer:
         """Initialize buffer for normal mode."""
