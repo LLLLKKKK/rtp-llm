@@ -1828,6 +1828,10 @@ nvidia-cublas==13.1.0.3 \
     #   cuda-toolkit
     #   nvidia-cudnn-cu13
     #   nvidia-cusolver
+nvidia-cuda-cccl==13.2.86 \
+    --hash=sha256:05f2a2123cd7bc13b731d219d27e50281150a7985d5955bffcde0e966cefe0a2 \
+    --hash=sha256:35da671cf0cecd3539da214a11bb8e7634366c9e950da9c5feecf6c490a65b20
+    # via nvidia-nvshmem-cu13
 nvidia-cuda-cupti==13.0.85 \
     --hash=sha256:4eb01c08e859bf924d222250d2e8f8b8ff6d3db4721288cf35d14252a4d933c8 \
     --hash=sha256:683f58d301548deeefcb8f6fac1b8d907691b9d8b18eccab417f51e362102f00 \
@@ -1936,10 +1940,10 @@ nvidia-nvjitlink==13.0.88 \
     #   nvidia-cufft
     #   nvidia-cusolver
     #   nvidia-cusparse
-nvidia-nvshmem-cu13==3.4.5 \
-    --hash=sha256:290f0a2ee94c9f3687a02502f3b9299a9f9fe826e6d0287ee18482e78d495b80 \
-    --hash=sha256:6dc2a197f38e5d0376ad52cd1a2a3617d3cdc150fd5966f4aee9bcebb1d68fe9
-    # via torch
+nvidia-nvshmem-cu13==3.5.19 \
+    --hash=sha256:0f734285d3a04824c13e9e2c1169dbb818be9cb0819de69389aaa067b8d18c93 \
+    --hash=sha256:53440ae98eadd3bd83fc875c793d737e2ce618632759942a32d4cfb1814c0a74
+    # override: NVSHMEM 3.5.19 fixes RoCE IBGDA DCT address-handle initialization
 nvidia-nvtx==13.0.85 \
     --hash=sha256:4936d1d6780fbe68db454f5e72a42ff64d1fd6397df9f363ae786930fd5c1cd4 \
     --hash=sha256:cb7780edb6b14107373c835bf8b72e7a178bac7367e23da7acb108f973f157a6 \
