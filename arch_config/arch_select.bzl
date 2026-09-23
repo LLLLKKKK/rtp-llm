@@ -186,7 +186,11 @@ def flashmla_deps():
 def deep_ep_py_deps():
     native.alias(
         name = "deep_ep_py",
-        actual = "@rtp_llm//rtp_llm:empty_target",
+        actual = select({
+            "@rtp_llm//:using_cuda13_x86": requirement_gpu_cuda13("deep-ep"),
+            "@rtp_llm//:using_cuda13_arm": requirement_cuda13_arm("deep-ep"),
+            "//conditions:default": "@rtp_llm//rtp_llm:empty_target",
+        }),
     )
 
 def cuda_register():

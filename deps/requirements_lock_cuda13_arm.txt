@@ -647,6 +647,9 @@ decorator==5.3.1 \
     --hash=sha256:4cbcdd55a6efadb9dbea26b858f4fb3264567b52d69ca0d25b721b553f60ea82 \
     --hash=sha256:f47fe6fdbd2edd623ecfe36875d37aba411624e2670dd395dddae1358689bb3c
     # via librosa
+deep-ep @ http://artlab.alibaba-inc.com/1/pypi/rtp_llm/deep-ep/deep_ep-2.1.0%2Ba56d615-cp310-cp310-linux_aarch64.whl \
+    --hash=sha256:4b5460d7cc225aa0739844413b9f8213065b1d6348b5dab6d3c95d5ba91bb5ab
+    # via -r internal_source/deps/requirements_cuda13_arm.txt
 deep-gemm @ http://rtp-maga.oss-cn-zhangjiakou.aliyuncs.com/rtp_llm/deep_gemm/cuda13_gb300/deep_gemm-2.5.0%2B6053f00-cp310-cp310-linux_aarch64.whl \
     --hash=sha256:0b2b85be56f2f2f4401025f3d113dc1af59ac745aeac638be06a277c82f2abe9
     # via -r internal_source/deps/requirements_cuda13_arm.txt
@@ -2255,10 +2258,10 @@ nvidia-ml-py==13.610.43 \
     # via
     #   flashinfer-python
     #   pynvml
-nvidia-nccl-cu13==2.28.9 \
-    --hash=sha256:01c873ba1626b54caa12272ed228dc5b2781545e0ae8ba3f432a8ef1c6d78643 \
-    --hash=sha256:e4553a30f34195f3fa1da02a6da3d6337d28f2003943aa0a3d247bbc25fefc42
-    # via torch
+nvidia-nccl-cu13==2.30.4 \
+    --hash=sha256:534dbf3058cadb625f08ab0d17f1dffad3b961a2bfa360d66633fcf21be53f57 \
+    --hash=sha256:e99308a3a89fba78918d50886e81072a6c8b0b4199feb02c3903e63713a6525a
+    # override: DeepEP 2.1.0 requires NCCL >=2.30.4
 nvidia-nvjitlink==13.0.88 \
     --hash=sha256:13a74f429e23b921c1109976abefacc69835f2f433ebd323d3946e11d804e47b \
     --hash=sha256:634e96e3da9ef845ae744097a1f289238ecf946ce0b82e93cdce14b9782e682f \

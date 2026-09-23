@@ -1,13 +1,9 @@
 -r requirements_base.txt
 
 # CUDA 13.2 / torch 2.11+cu130 / triton 3.6.0 dep set.
-# First-version scope: torch + torchvision + triton + deep_gemm + flash_mla
-# + fast_safetensors + fastsafetensors (the last two rebuilt against
-# torch 2.11+cu130 and mirrored to oss://rtp-maga/0502/).  Other
-# torch-ABI-bound wheels (flash_attn, deep_ep, rtp_kernel,
-# fast_hadamard, nvidia_cutlass_dsl) are deferred — see plan
-# §K and bazel/arch_select.bzl whl_deps() cuda13_x86 branch for how
-# rtp_llm/BUILD selects subset out of that set.
+# Includes official DeepEP main@a56d6156 built against NCCL 2.30.4 and
+# NVSHMEM 3.5.19. Other torch-ABI-bound wheels (flash_attn,
+# fast_hadamard, nvidia_cutlass_dsl) remain deferred.
 
 # Core torch stack — wheels mirrored to OSS by us; upstream is
 # https://download.pytorch.org/whl/cu130/.
@@ -28,6 +24,8 @@ tilelang==0.1.9
 # DeepGEMM 8bcfcab preserves native SM120 kernels and adds MegaMoE shared_recipe.
 https://rtp-maga.oss-cn-zhangjiakou.aliyuncs.com/rtp_llm/deep_gemm/cuda13_sm120/8bcfcab8757e7df2fcb0e4f65796da5cd5bdd6b4/deep_gemm-2.6.1%2B8bcfcab.cu132-cp310-cp310-linux_x86_64.whl
 https://rtp-maga.oss-cn-zhangjiakou.aliyuncs.com/miji/0430/flash_mla-1.0.0%2B9241ae3-cp310-cp310-linux_x86_64.whl
+# Official DeepEP main@a56d6156 with legacy Buffer and V2 APIs.
+http://artlab.alibaba-inc.com/1/pypi/rtp_llm/deep-ep/deep_ep-2.1.0%2Ba56d615-cp310-cp310-linux_x86_64.whl
 
 # rtp_kernel built from gitlab cuda_extension main@3bc0ca45
 # (sm_80/90a/100a/103a/120a)
