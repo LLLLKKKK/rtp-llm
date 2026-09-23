@@ -6,26 +6,43 @@ combining the functionality of the previous DeepEPInitializer and DeepEPWrapper 
 
 import gc
 import logging
+import os
 import threading
 from dataclasses import dataclass
 from enum import IntEnum, auto
+from pathlib import Path
 from typing import Optional, Tuple
 
 import torch
 
 from torch.distributed import ProcessGroup
 
+
+def _configure_deepep_nccl_root() -> None:
+    if "EP_NCCL_ROOT_DIR" in os.environ:
+        return
+    try:
+        loaded_nccl = {
+            Path(line.rsplit(maxsplit=1)[-1]).resolve()
+            for line in Path("/proc/self/maps").read_text().splitlines()
+            if "/libnccl.so" in line
+        }
+    except OSError:
+        return
+    if len(loaded_nccl) == 1:
+        nccl_root = next(iter(loaded_nccl)).parent.parent
+        if (nccl_root / "lib").is_dir() and (nccl_root / "include").is_dir():
+            os.environ["EP_NCCL_ROOT_DIR"] = str(nccl_root)
+
+
+_configure_deepep_nccl_root()
+
 try:
     from deep_ep import Buffer as DeepEPBuffer
     from deep_ep import Config as DeepEPConfig
 except ImportError as _deep_ep_import_err:
-    # deep_ep wheel is omitted from some lock files (e.g. cuda13: no
-    # torch2.11+cu130 build yet, and the cu12.9 prebuilt links libcudart.so.12
-    # which is absent in the cu13 toolchain). Provide stubs so module-level
-    # `from .deepep_wrapper import ...` and type annotations resolve. Any code
-    # path that actually constructs / calls these (init_deepep_wrapper for an
-    # ep>1 MoE config) raises a clear error at the use-site instead of failing
-    # at import time for unrelated startup paths.
+    # Some CPU and non-NVIDIA builds intentionally omit deep_ep. Keep unrelated
+    # startup paths importable and fail only when a DeepEP path is selected.
     _DEEP_EP_IMPORT_ERROR = _deep_ep_import_err
 
     class _DeepEPUnavailable:
