@@ -11,7 +11,7 @@ mysql-connector-python
 http://rtp-maga.oss-cn-zhangjiakou.aliyuncs.com/rtp_llm/deep_gemm/cuda13_gb300/deep_gemm-2.5.0%2B6053f00-cp310-cp310-linux_aarch64.whl
 https://rtp-maga.cn-zhangjiakou.oss.aliyuncs.com/0530/arm_pkg/sglang/flash_mla-1.0.0%2B92fd68b-cp310-cp310-linux_aarch64.whl
 # Official DeepEP main@a56d6156 with legacy Buffer and V2 APIs.
-http://artlab.alibaba-inc.com/1/pypi/rtp_llm/deep-ep/deep_ep-2.1.0%2Ba56d615-cp310-cp310-linux_aarch64.whl
+http://artlab.alibaba-inc.com/1/pypi/rtp_llm/deep-ep/deep_ep-2.1.0%2Ba56d615-1-cp310-cp310-linux_aarch64.whl
 
 # Unified rtp_kernel built from cuda_extension main@34e3b72a against
 # torch 2.11+cu130; includes the current fused RoPE position_ids API.

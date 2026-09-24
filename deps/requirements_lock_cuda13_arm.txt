@@ -647,8 +647,8 @@ decorator==5.3.1 \
     --hash=sha256:4cbcdd55a6efadb9dbea26b858f4fb3264567b52d69ca0d25b721b553f60ea82 \
     --hash=sha256:f47fe6fdbd2edd623ecfe36875d37aba411624e2670dd395dddae1358689bb3c
     # via librosa
-deep-ep @ http://artlab.alibaba-inc.com/1/pypi/rtp_llm/deep-ep/deep_ep-2.1.0%2Ba56d615-cp310-cp310-linux_aarch64.whl \
-    --hash=sha256:4b5460d7cc225aa0739844413b9f8213065b1d6348b5dab6d3c95d5ba91bb5ab
+deep-ep @ http://artlab.alibaba-inc.com/1/pypi/rtp_llm/deep-ep/deep_ep-2.1.0%2Ba56d615-1-cp310-cp310-linux_aarch64.whl \
+    --hash=sha256:f801e68496d07ea4043026e8f9cdfbeaa09ba43820caaea27ea4007117f747e8
     # via -r internal_source/deps/requirements_cuda13_arm.txt
 deep-gemm @ http://rtp-maga.oss-cn-zhangjiakou.aliyuncs.com/rtp_llm/deep_gemm/cuda13_gb300/deep_gemm-2.5.0%2B6053f00-cp310-cp310-linux_aarch64.whl \
     --hash=sha256:0b2b85be56f2f2f4401025f3d113dc1af59ac745aeac638be06a277c82f2abe9
