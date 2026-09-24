@@ -1,5 +1,5 @@
 
-#if USING_CUDA
+#if USING_CUDA && !defined(USE_PPU)
 #include "rtp_llm/models_py/bindings/cuda/XQAAttnOp.h"
 #include "rtp_llm/models_py/bindings/common/kernels/kv_cache_kernels.h"
 #include "rtp_llm/models_py/bindings/cuda/cuda_host_utils.h"
