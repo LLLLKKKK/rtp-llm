@@ -114,7 +114,6 @@ class OpenaiComparerGraphStatusTest(unittest.TestCase):
             "skip_usage": True,
             "required_aux_info": {
                 "input_len": 98,
-                "output_len": 1,
                 "reuse_len": 0,
                 "remote_reuse_len": 0,
             },
@@ -128,7 +127,6 @@ class OpenaiComparerGraphStatusTest(unittest.TestCase):
         }
         actual["aux_info"] = {
             "input_len": 98,
-            "output_len": 1,
             "reuse_len": 0,
             "remote_reuse_len": 0,
         }
