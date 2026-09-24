@@ -654,9 +654,8 @@ absl::StatusOr<GptModelInputs> NormalModelInputGatherer::gather(const StreamGrou
     initializeKvCacheMetadata(model_input);
     RETURN_IF_STATUS_ERROR(processDecodeStreams(model_input, stream_groups));
     RETURN_IF_STATUS_ERROR(processContextStreams(model_input, stream_groups, host_holder));
-    // No host mirrors are kept for ModelInputsLogger: it snapshots every tensor
-    // in place (device-side clone + per-device c10::Event) and only pays the D2H
-    // on its own worker thread, so it reads post-publish CUDA members directly.
+    // ModelInputsLogger snapshots CUDA tensors to independent CPU storage before
+    // returning, so it can safely serialize post-publish members on its worker.
     if (deviceInputEnabled()) {
         publishModelInputCoreTensorsToCuda(model_input, host_holder);
         model_input.lm_output_indexes = buildLmOutputIndexesOnCuda(model_input, stream_groups);
