@@ -320,6 +320,8 @@ class NormalComparer(BaseComparer):
     ) -> bool:
         if expect_beams is None or actual_beams is None:
             return expect_beams == actual_beams
+        if not expect_beams and not actual_beams:
+            return True
         if len(expect_beams) != len(actual_beams) or Counter(expect_beams) != Counter(
             actual_beams
         ):

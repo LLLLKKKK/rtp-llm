@@ -127,13 +127,18 @@ class NormalComparerBeamOrderingTest(unittest.TestCase):
     def _response(self, beams, scores):
         return self.comparer.format_result(
             {
-                "response": beams[0],
+                "response": beams[0] if beams else "same",
                 "aux_info": {
                     "beam_responses": beams,
                     "cum_log_probs": scores,
                 },
             }
         )
+
+    def test_non_beam_empty_responses_pass(self):
+        expected = self._response([], [0.0])
+        actual = self._response([], [0.0])
+        self.comparer.compare_result(expected, actual)
 
     def test_near_equal_beams_may_swap(self):
         expected = self._response(["primary", "second", "third"], [-1.0])
