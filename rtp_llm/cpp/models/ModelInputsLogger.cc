@@ -91,10 +91,11 @@ torch::Tensor snapshotTensor(const torch::Tensor& tensor, std::vector<c10::Devic
     if (!tensor.defined()) {
         return {};
     }
-    if (!tensor.device().is_cpu() && std::find(devices.begin(), devices.end(), tensor.device()) == devices.end()) {
-        devices.push_back(tensor.device());
-    }
+    static_cast<void>(devices);
     auto snapshot = tensor.detach();
+    if (!snapshot.device().is_cpu()) {
+        return snapshot.cpu().contiguous();
+    }
     return snapshot.is_contiguous() ? snapshot.clone() : snapshot.contiguous();
 }
 void addTensor(c10::impl::GenericDict&   payload,
