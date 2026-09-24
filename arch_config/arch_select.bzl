@@ -89,6 +89,7 @@ def whl_deps():
             # CI-built DeepGEMM: native SM120 kernels plus MegaMoE shared_recipe.
             "deep_gemm@https://rtp-maga.oss-cn-zhangjiakou.aliyuncs.com/rtp_llm/deep_gemm/cuda13_sm120/8bcfcab8757e7df2fcb0e4f65796da5cd5bdd6b4/deep_gemm-2.6.1%2B8bcfcab.cu132-cp310-cp310-linux_x86_64.whl",
             "flash-mla@https://rtp-maga.oss-cn-zhangjiakou.aliyuncs.com/miji/0430/flash_mla-1.0.0%2B9241ae3-cp310-cp310-linux_x86_64.whl",
+            "deep-ep@http://artlab.alibaba-inc.com/1/pypi/rtp_llm/deep-ep/deep_ep-2.1.0%2Ba56d615-cp310-cp310-linux_x86_64.whl",
             "rtp-kernel@http://artlab.alibaba-inc.com/1/pypi/rtp_llm/rtp-kernel/rtp_kernel-0.1.0%2B34e3b72a.cu132-cp310-cp310-linux_x86_64.whl",
             "fast-safetensors@https://rtp-maga.oss-cn-zhangjiakou.aliyuncs.com/0507/fast_safetensors-0.7.3%2Btorch2.11.cu130-cp310-cp310-linux_x86_64.whl",
             "fastsafetensors@https://rtp-maga.oss-cn-zhangjiakou.aliyuncs.com/0502/fastsafetensors-0.1.20%2Bali-cp310-cp310-linux_x86_64.whl",
@@ -99,6 +100,7 @@ def whl_deps():
             "torchvision@https://rtp-maga.cn-zhangjiakou.oss.aliyuncs.com/rtp_llm/arm_pkg/torchvision-0.26.0%2Bcu130-cp310-cp310-manylinux_2_28_aarch64.whl",
             "deep_gemm@http://rtp-maga.oss-cn-zhangjiakou.aliyuncs.com/rtp_llm/deep_gemm/cuda13_gb300/deep_gemm-2.5.0%2B6053f00-cp310-cp310-linux_aarch64.whl",
             "flash-mla@https://rtp-maga.cn-zhangjiakou.oss.aliyuncs.com/0530/arm_pkg/sglang/flash_mla-1.0.0%2B92fd68b-cp310-cp310-linux_aarch64.whl",
+            "deep-ep@http://artlab.alibaba-inc.com/1/pypi/rtp_llm/deep-ep/deep_ep-2.1.0%2Ba56d615-2-cp310-cp310-linux_aarch64.whl",
             "rtp-kernel@http://artlab.alibaba-inc.com/1/pypi/rtp_llm/rtp-kernel/rtp_kernel-0.1.0%2B34e3b72a.cu132-cp310-cp310-linux_aarch64.whl",
             "fast-safetensors@https://rtp-maga.cn-zhangjiakou.oss.aliyuncs.com/0513/arm_pkg/fast_safetensors-0.7.3%2Btorch2.11.cu130-cp310-cp310-linux_aarch64.whl",
             "fastsafetensors@https://rtp-maga.cn-zhangjiakou.oss.aliyuncs.com/0513/arm_pkg/fastsafetensors-0.1.20%2Bali-cp310-cp310-linux_aarch64.whl",

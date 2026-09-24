@@ -300,9 +300,8 @@ py_library(
         "//rtp_llm/models_py:models",
         ":multimodal",
     ] + select({
-        # cuda13 x86 lock ships deep-ep; the arm lock does not yet.
         "@//:using_cuda13_x86": deep,
-        "@//:using_cuda13_arm": ["deep_gemm"],
+        "@//:using_cuda13_arm": deep,
         "@//:using_cuda": deep,
         "//conditions:default": []
     }) + select({

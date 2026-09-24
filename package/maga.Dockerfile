@@ -1,4 +1,4 @@
-ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/lib64:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+ENV LD_LIBRARY_PATH=/opt/conda310/lib/python3.10/site-packages/nvidia/nvshmem/lib:/usr/local/nvidia/lib64:/usr/lib64:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
 ARG WHL_FILE
 ARG EXPECTED_CUDA_MAJOR
@@ -12,28 +12,37 @@ RUN /opt/conda310/bin/pip install /tmp/$WHL_FILE \
     --extra-index-url=${PYTORCH_WHEEL_INDEX} \
     && rm /tmp/$WHL_FILE
 
-# Reject CUDA 12-linked RTP-LLM binaries at the CUDA 13 packaging boundary.
+# Reject CUDA 12-linked runtime packages at the CUDA 13 packaging boundary.
 RUN if [ "${EXPECTED_CUDA_MAJOR:-}" = "13" ]; then \
         if ! command -v readelf >/dev/null 2>&1; then \
             echo "ERROR: readelf is required for CUDA runtime validation" >&2; \
             exit 1; \
         fi; \
-        if ! BAD_CUDA12_ELFS="$(find /opt/conda310/lib/python3.10/site-packages/rtp_llm \
-            -type f \( -name '*.so' -o -name '*.so.*' \) \
-            -exec sh -c 'for elf do \
-                if ! dynamic_section=$(readelf -d "$elf" 2>&1); then \
-                    echo "ERROR: readelf failed for $elf: $dynamic_section" >&2; \
-                    exit 1; \
-                fi; \
-                if printf "%s\n" "$dynamic_section" | grep -Eq "NEEDED.*lib(cudart|cupti)\.so\.12"; then \
-                    printf "%s\n" "$elf"; \
-                fi; \
-            done' sh {} +)"; then \
-            echo "ERROR: failed to inspect RTP-LLM ELF dependencies" >&2; \
+        if ! BAD_CUDA12_ELFS="$(set -e; for root in \
+            /opt/conda310/lib/python3.10/site-packages/rtp_llm \
+            /opt/conda310/lib/python3.10/site-packages/deep_ep \
+            /opt/conda310/lib/python3.10/site-packages/deep_gemm \
+            /opt/conda310/lib/python3.10/site-packages/flashinfer \
+            /opt/conda310/lib/python3.10/site-packages/rtp_kernel \
+            /opt/conda310/lib/python3.10/site-packages/torch \
+            /opt/conda310/lib/python3.10/site-packages/nvidia; do \
+            [ -d "$root" ] || continue; \
+            find -L "$root" -xdev -type f \( -name '*.so' -o -name '*.so.*' \) \
+                -exec sh -c 'for elf do \
+                    if ! dynamic_section=$(readelf -d "$elf" 2>&1); then \
+                        echo "ERROR: readelf failed for $elf: $dynamic_section" >&2; \
+                        exit 1; \
+                    fi; \
+                    if printf "%s\n" "$dynamic_section" | grep -Eq "NEEDED.*lib(cudart|cupti|cublas|cublasLt|cusparse|cusolver|cufft|curand|nvrtc|nvJitLink)\.so\.12"; then \
+                        printf "%s\n" "$elf"; \
+                    fi; \
+                done' sh {} +; \
+        done)"; then \
+            echo "ERROR: failed to inspect runtime ELF dependencies" >&2; \
             exit 1; \
         fi; \
         if [ -n "$BAD_CUDA12_ELFS" ]; then \
-            echo "ERROR: CUDA 13 image contains RTP-LLM ELF files linked to CUDA 12:" >&2; \
+            echo "ERROR: CUDA 13 image contains ELF files linked to CUDA 12:" >&2; \
             echo "$BAD_CUDA12_ELFS" >&2; \
             exit 1; \
         fi; \
