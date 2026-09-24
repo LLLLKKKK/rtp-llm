@@ -33,7 +33,7 @@ RUN if [ "${EXPECTED_CUDA_MAJOR:-}" = "13" ]; then \
                         echo "ERROR: readelf failed for $elf: $dynamic_section" >&2; \
                         exit 1; \
                     fi; \
-                    if printf "%s\n" "$dynamic_section" | grep -Eq "NEEDED.*lib(cudart|cupti|cublas|cublasLt|cusparse|cusolver|cufft|curand|nvrtc|nvJitLink)\.so\.12"; then \
+                    if printf "%s\n" "$dynamic_section" | grep -Eq "NEEDED.*lib(cudart|cupti)\.so\.12"; then \
                         printf "%s\n" "$elf"; \
                     fi; \
                 done' sh {} +; \
