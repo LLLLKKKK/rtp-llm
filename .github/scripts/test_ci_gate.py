@@ -282,30 +282,30 @@ class TestParseRequiredJobStatus(unittest.TestCase):
         }
         self.assertEqual(self._parse(response), "MISSING")
 
-    def test_server_validated_contract_passes(self):
+    def test_validated_contract_cannot_replace_explicit_job(self):
         response = {
             "status": "SUCCESS",
             "validatedContracts": {
                 self.REQUIRED_JOB: {"validated": True, "status": "SUCCESS"}
             },
         }
-        self.assertEqual(self._parse(response), "DONE")
+        self.assertEqual(self._parse(response), "MISSING")
 
-    def test_unvalidated_server_contract_fails(self):
+    def test_unvalidated_contract_is_missing(self):
         response = {
             "validatedContracts": {
                 self.REQUIRED_JOB: {"validated": False, "status": "SUCCESS"}
             }
         }
-        self.assertEqual(self._parse(response), "FAILED")
+        self.assertEqual(self._parse(response), "MISSING")
 
-    def test_contract_status_without_validation_fails(self):
+    def test_contract_status_without_validation_is_missing(self):
         response = {
             "validatedContracts": {
                 self.REQUIRED_JOB: {"status": "SUCCESS"}
             }
         }
-        self.assertEqual(self._parse(response), "FAILED")
+        self.assertEqual(self._parse(response), "MISSING")
 
 
 # ---------------------------------------------------------------------------
@@ -714,13 +714,23 @@ class TestPreCheckStatus(unittest.TestCase):
 
     @patch("ci_gate.ci.retrieve_task_status")
     def test_done_returns_0(self, mock_status):
-        result, output = self._run_with_output(mock_status, {"status": "SUCCESS", "commitId": "abc", "taskId": "1"})
+        result, output = self._run_with_output(mock_status, {"status": "SUCCESS", "commitId": "abc123", "taskId": "1"})
         self.assertEqual(result, 0)
         self.assertIn("ci_action=done", output)
 
     @patch("ci_gate.ci.retrieve_task_status")
+    def test_mismatched_commit_triggers(self, mock_status):
+        result, output = self._run_with_output(
+            mock_status,
+            {"status": "SUCCESS", "commitId": "stale", "taskId": "1"},
+            max_attempts=1,
+        )
+        self.assertEqual(result, 1)
+        self.assertIn("ci_action=trigger", output)
+
+    @patch("ci_gate.ci.retrieve_task_status")
     def test_failed_returns_1(self, mock_status):
-        result, output = self._run_with_output(mock_status, {"status": "FAILED", "commitId": "abc", "taskId": "1"})
+        result, output = self._run_with_output(mock_status, {"status": "FAILED", "commitId": "abc123", "taskId": "1"})
         self.assertEqual(result, 1)
         self.assertIn("ci_action=trigger", output)
 
@@ -728,7 +738,7 @@ class TestPreCheckStatus(unittest.TestCase):
     def test_network_error_retry(self, mock_status):
         mock_status.side_effect = [
             GateError("Network error"),
-            {"status": "SUCCESS", "commitId": "abc", "taskId": "1"},
+            {"status": "SUCCESS", "commitId": "abc123", "taskId": "1"},
         ]
         with tempfile.NamedTemporaryFile(mode="r+") as output:
             result = pre_check_status(self._args(output_file=output.name))
@@ -740,17 +750,19 @@ class TestPreCheckStatus(unittest.TestCase):
     @patch("ci_gate.ci.time.sleep")
     @patch("ci_gate.ci.retrieve_task_status")
     def test_running_returns_wait_action(self, mock_status, mock_sleep):
-        mock_status.return_value = {"status": "RUNNING", "commitId": "abc", "taskId": "1"}
+        mock_status.return_value = {"status": "RUNNING", "commitId": "abc123", "taskId": "1"}
         with tempfile.NamedTemporaryFile(mode="r+") as output:
             result = pre_check_status(self._args(output_file=output.name))
             output.seek(0)
             self.assertEqual(result, 0)
-            self.assertIn("ci_action=wait", output.read())
+            output_text = output.read()
+            self.assertIn("ci_action=wait", output_text)
+            self.assertIn("ci_task_id=1", output_text)
 
     @patch("ci_gate.ci.time.sleep")
     @patch("ci_gate.ci.retrieve_task_status")
     def test_pending_returns_trigger_action(self, mock_status, mock_sleep):
-        mock_status.return_value = {"status": "PENDING", "commitId": "abc", "taskId": "1"}
+        mock_status.return_value = {"status": "PENDING", "commitId": "abc123", "taskId": "1"}
         with tempfile.NamedTemporaryFile(mode="r+") as output:
             result = pre_check_status(self._args(output_file=output.name))
             output.seek(0)
@@ -762,7 +774,7 @@ class TestPreCheckStatus(unittest.TestCase):
         response = {
             "status": "SUCCESS",
             "params": {"required-validation": "true"},
-            "commitId": "abc",
+            "commitId": "abc123",
             "taskId": "1",
         }
         result, output = self._run_with_output(
@@ -776,7 +788,7 @@ class TestPreCheckStatus(unittest.TestCase):
         response = {
             "status": "SUCCESS",
             "jobs": {"required-validation": "SUCCESS"},
-            "commitId": "abc",
+            "commitId": "abc123",
             "taskId": "1",
         }
         result, output = self._run_with_output(
@@ -792,7 +804,7 @@ class TestPreCheckStatus(unittest.TestCase):
                 response = {
                     "status": "SUCCESS",
                     "jobs": {"required-validation": required_status},
-                    "commitId": "abc",
+                    "commitId": "abc123",
                     "taskId": "1",
                 }
                 result, output = self._run_with_output(
@@ -806,7 +818,7 @@ class TestPreCheckStatus(unittest.TestCase):
         response = {
             "status": "RUNNING",
             "jobs": {"required-validation": "FAILED"},
-            "commitId": "abc",
+            "commitId": "abc123",
             "taskId": "1",
         }
         result, output = self._run_with_output(
@@ -821,7 +833,7 @@ class TestPreCheckStatus(unittest.TestCase):
         response = {
             "status": "PENDING",
             "jobs": {"required-validation": "PENDING"},
-            "commitId": "abc",
+            "commitId": "abc123",
             "taskId": "1",
         }
         result, output = self._run_with_output(
@@ -836,7 +848,7 @@ class TestPreCheckStatus(unittest.TestCase):
         response = {
             "status": "RUNNING",
             "jobs": {"required-validation": "RUNNING"},
-            "commitId": "abc",
+            "commitId": "abc123",
             "taskId": "1",
         }
         result, output = self._run_with_output(
@@ -848,7 +860,7 @@ class TestPreCheckStatus(unittest.TestCase):
     @patch("ci_gate.ci.time.sleep")
     @patch("ci_gate.ci.retrieve_task_status")
     def test_running_without_required_job_triggers(self, mock_status, mock_sleep):
-        response = {"status": "RUNNING", "commitId": "abc", "taskId": "1"}
+        response = {"status": "RUNNING", "commitId": "abc123", "taskId": "1"}
         result, output = self._run_with_output(
             mock_status, response, required_job="required-validation"
         )
@@ -868,6 +880,7 @@ class TestWaitStatus(unittest.TestCase):
             "max_wait_time": 9999,
             "max_wait_pending_time": 9999,
             "max_wait_running_time": 9999,
+            "task_id": "",
         }
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
@@ -876,9 +889,9 @@ class TestWaitStatus(unittest.TestCase):
     @patch("ci_gate.ci.retrieve_task_status")
     def test_pending_then_done(self, mock_status, mock_sleep):
         mock_status.side_effect = [
-            {"status": "PENDING", "commitId": "abc", "taskId": "1"},
-            {"status": "RUNNING", "commitId": "abc", "taskId": "1"},
-            {"status": "SUCCESS", "commitId": "abc", "taskId": "1"},
+            {"status": "PENDING", "commitId": "abc123", "taskId": "1"},
+            {"status": "RUNNING", "commitId": "abc123", "taskId": "1"},
+            {"status": "SUCCESS", "commitId": "abc123", "taskId": "1"},
         ]
         result = wait_status(self._args())
         self.assertEqual(result, 0)
@@ -886,10 +899,21 @@ class TestWaitStatus(unittest.TestCase):
     @patch("ci_gate.ci.time.sleep")
     @patch("ci_gate.ci.retrieve_task_status")
     def test_failed_exits_early(self, mock_status, mock_sleep):
-        mock_status.return_value = {"status": "FAILED", "commitId": "abc", "taskId": "1"}
+        mock_status.return_value = {"status": "FAILED", "commitId": "abc123", "taskId": "1"}
         result = wait_status(self._args())
         self.assertEqual(result, 1)
         self.assertEqual(mock_status.call_count, 1)
+
+    @patch("ci_gate.ci.retrieve_task_status")
+    def test_mismatched_task_id_fails_closed(self, mock_status):
+        mock_status.return_value = {
+            "status": "SUCCESS",
+            "jobs": {"required-validation": "SUCCESS"},
+            "commitId": "abc123",
+            "taskId": "stale",
+        }
+        with self.assertRaises(GateError):
+            wait_status(self._args(required_job="required-validation", task_id="expected"))
 
     @patch("ci_gate.ci.time.sleep")
     @patch("ci_gate.ci.retrieve_task_status")
@@ -897,7 +921,7 @@ class TestWaitStatus(unittest.TestCase):
         mock_status.return_value = {
             "status": "SUCCESS",
             "params": {"required-validation": "true"},
-            "commitId": "abc",
+            "commitId": "abc123",
             "taskId": "1",
         }
         result = wait_status(self._args(required_job="required-validation"))
@@ -913,7 +937,7 @@ class TestWaitStatus(unittest.TestCase):
                 mock_status.return_value = {
                     "status": "SUCCESS",
                     "jobs": {"required-validation": required_status},
-                    "commitId": "abc",
+                    "commitId": "abc123",
                     "taskId": "1",
                 }
                 result = wait_status(self._args(required_job="required-validation"))
@@ -926,7 +950,7 @@ class TestWaitStatus(unittest.TestCase):
         mock_status.return_value = {
             "status": "RUNNING",
             "jobs": {"required-validation": "FAILED"},
-            "commitId": "abc",
+            "commitId": "abc123",
             "taskId": "1",
         }
         result = wait_status(self._args(required_job="required-validation"))
@@ -940,19 +964,19 @@ class TestWaitStatus(unittest.TestCase):
             {
                 "status": "PENDING",
                 "jobs": {"required-validation": "PENDING"},
-                "commitId": "abc",
+                "commitId": "abc123",
                 "taskId": "1",
             },
             {
                 "status": "RUNNING",
                 "jobs": {"required-validation": "RUNNING"},
-                "commitId": "abc",
+                "commitId": "abc123",
                 "taskId": "1",
             },
             {
                 "status": "SUCCESS",
                 "jobs": {"required-validation": "SUCCESS"},
-                "commitId": "abc",
+                "commitId": "abc123",
                 "taskId": "1",
             },
         ]
@@ -962,17 +986,17 @@ class TestWaitStatus(unittest.TestCase):
 
     @patch("ci_gate.ci.time.sleep")
     @patch("ci_gate.ci.retrieve_task_status")
-    def test_successful_server_contract_passes(self, mock_status, mock_sleep):
+    def test_successful_server_contract_without_job_fails(self, mock_status, mock_sleep):
         mock_status.return_value = {
             "status": "SUCCESS",
             "validated_contracts": {
                 "required-validation": {"validated": True}
             },
-            "commitId": "abc",
+            "commitId": "abc123",
             "taskId": "1",
         }
         result = wait_status(self._args(required_job="required-validation"))
-        self.assertEqual(result, 0)
+        self.assertEqual(result, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -987,6 +1011,7 @@ class TestTriggerCi(unittest.TestCase):
             "github_pr_id": "42",
             "github_run_id": "100",
             "repository": "org/repo",
+            "output_file": "",
         }
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
@@ -1010,9 +1035,20 @@ class TestTriggerCi(unittest.TestCase):
     @patch("ci_gate.ci.get_branch_info")
     def test_success_response(self, mock_branch, mock_ci):
         mock_branch.return_value = {"commit": {"id": "internal123"}}
+        mock_ci.return_value = {"success": True, "status": "CREATED", "taskId": "55"}
+        with tempfile.NamedTemporaryFile(mode="r+") as output:
+            result = trigger_ci(self._args(output_file=output.name))
+            output.seek(0)
+            self.assertEqual(result, 0)
+            self.assertIn("ci_task_id=55", output.read())
+
+    @patch("ci_gate.ci.ci_service_request")
+    @patch("ci_gate.ci.get_branch_info")
+    def test_missing_task_id_raises(self, mock_branch, mock_ci):
+        mock_branch.return_value = {"commit": {"id": "internal123"}}
         mock_ci.return_value = {"success": True, "status": "CREATED"}
-        result = trigger_ci(self._args())
-        self.assertEqual(result, 0)
+        with self.assertRaises(GateError):
+            trigger_ci(self._args())
 
     @patch("ci_gate.ci.ci_service_request")
     @patch("ci_gate.ci.get_branch_info")

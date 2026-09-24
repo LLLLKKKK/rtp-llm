@@ -27,6 +27,22 @@ def _required_job_status(args, response):
     return status
 
 
+def _response_identity_matches(response, commit_id, task_id=""):
+    # type: (dict, str, str) -> bool
+    response_commit = str(response.get("commitId") or "")
+    response_task = str(response.get("taskId") or "")
+    if response_commit != commit_id:
+        log("::error::CI response commitId %s does not match %s" % (response_commit or "<missing>", commit_id))
+        return False
+    if not response_task:
+        log("::error::CI response is missing taskId")
+        return False
+    if task_id and response_task != task_id:
+        log("::error::CI response taskId %s does not match %s" % (response_task, task_id))
+        return False
+    return True
+
+
 def pre_check_status(args):
     # type: (argparse.Namespace) -> int
     max_attempts = args.max_attempts
@@ -51,6 +67,13 @@ def pre_check_status(args):
             return 1
 
         log("Current commitId: %s, taskId: %s" % (response.get("commitId"), response.get("taskId")))
+        if not _response_identity_matches(response, args.commit_id):
+            if attempt < max_attempts:
+                log("CI response identity mismatch, retrying in %d seconds..." % sleep_interval)
+                time.sleep(sleep_interval)
+                continue
+            _write_pre_check_action(args, "trigger")
+            return 1
         main_status, status_summary = parse_ci_status(response)
         required_status = _required_job_status(args, response)
         log("Current status: %s" % status_summary)
@@ -87,6 +110,7 @@ def pre_check_status(args):
             return 1
         log("CI is RUNNING for this commit after %d checks, skipping trigger but waiting for result" % max_attempts)
         _write_pre_check_action(args, "wait")
+        write_output("ci_task_id", str(response["taskId"]), getattr(args, "output_file", ""))
         return 0
     if main_status == "PENDING":
         if required_status == "MISSING":
@@ -105,12 +129,18 @@ def wait_status(args):
     max_wait_time = args.max_wait_time
     max_wait_pending_time = args.max_wait_pending_time
     max_wait_running_time = args.max_wait_running_time
+    expected_task_id = str(getattr(args, "task_id", "") or "")
     overall_start = time.time()
     running_start = None  # type: float
 
     while True:
         log("Querying CI status for commitId: %s ..." % args.commit_id)
         response = retrieve_task_status(args.commit_id, args.security, args.repository)
+        if not _response_identity_matches(response, args.commit_id, expected_task_id):
+            raise GateError("Error: CI status response identity does not match the requested run")
+        if not expected_task_id:
+            expected_task_id = str(response["taskId"])
+            log("Bound CI wait to taskId: %s" % expected_task_id)
         current_time = time.time()
         overall_elapsed = int(current_time - overall_start)
         if overall_elapsed > max_wait_time:
@@ -192,4 +222,10 @@ def trigger_ci(args):
     status = str(body.get("status", "")).upper()
     if status in {"FAILED", "ERROR"}:
         raise GateError("::error::CI trigger failed: %s" % body)
+    task_id = body.get("taskId")
+    if task_id is None and isinstance(body.get("data"), dict):
+        task_id = body["data"].get("taskId")
+    if task_id is None:
+        raise GateError("::error::CI trigger response is missing taskId")
+    write_output("ci_task_id", str(task_id), getattr(args, "output_file", ""))
     return 0

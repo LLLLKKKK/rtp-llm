@@ -301,50 +301,6 @@ def _parse_required_status_value(value):
     return parse_ci_status({"status": normalized})
 
 
-def _find_required_contract(value, required_job):
-    # type: (Any, str) -> Any
-    value = normalize_status_payload(value)
-    if isinstance(value, dict):
-        for key, nested in value.items():
-            if _matches_job_id(str(key), required_job):
-                return nested
-
-        identity_keys = {"contract", "id", "job", "jobid", "job_id", "name"}
-        if any(
-            str(key).lower() in identity_keys and _matches_job_id(nested, required_job)
-            for key, nested in value.items()
-        ):
-            return value
-
-        for nested in value.values():
-            match = _find_required_contract(nested, required_job)
-            if match is not None:
-                return match
-    elif isinstance(value, list):
-        for nested in value:
-            match = _find_required_contract(nested, required_job)
-            if match is not None:
-                return match
-    return None
-
-
-def _parse_validated_contract(value):
-    # type: (Any) -> Tuple[str, str]
-    normalized = normalize_status_payload(value)
-    if normalized is True:
-        return "DONE", "validated"
-    if not isinstance(normalized, dict) or normalized.get("validated") is not True:
-        if isinstance(normalized, (dict, list)):
-            summary = json.dumps(normalized, separators=(",", ":"))
-        else:
-            summary = str(normalized)
-        return "FAILED", summary
-    for key in ("status", "state", "result", "conclusion"):
-        if key in normalized:
-            return _parse_required_status_value(normalized[key])
-    return "DONE", "validated"
-
-
 def parse_required_job_status(response, required_job):
     # type: (Dict[str, Any], str) -> Tuple[str, str]
     if not required_job:
@@ -365,20 +321,6 @@ def parse_required_job_status(response, required_job):
         if job_status is not None:
             return _parse_required_status_value(job_status)
 
-    # These fields are reserved for service-produced validation attestations.
-    # Request parameters are intentionally excluded: an older pipeline may echo
-    # required-validation=true without ever creating the required fan-in job.
-    for key in (
-        "validatedContract",
-        "validatedContracts",
-        "validated_contract",
-        "validated_contracts",
-    ):
-        if key not in response:
-            continue
-        contract = _find_required_contract(response[key], required_job)
-        if contract is not None:
-            return _parse_validated_contract(contract)
     return "MISSING", "missing"
 
 

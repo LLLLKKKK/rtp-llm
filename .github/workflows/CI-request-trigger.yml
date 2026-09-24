@@ -159,6 +159,7 @@ jobs:
           fi
 
       - name: Trigger CI
+        id: trigger-ci
         if: steps.review-gate.outputs.qualified == 'true' && steps.pre-check.outputs.ci_action == 'trigger'
         run: |
           echo "=== Task started at: $(date '+%Y-%m-%d %H:%M:%S') ==="
@@ -169,7 +170,8 @@ jobs:
             "${{ steps.review-gate.outputs.clone_url }}" \
             "${{ steps.review-gate.outputs.pr_number }}" \
             "${{ github.run_id }}" \
-            --repository "${{ github.repository }}"
+            --repository "${{ github.repository }}" \
+            --output-file "$GITHUB_OUTPUT"
           sleep 30
 
       - name: Add comment via REST API
@@ -200,7 +202,8 @@ jobs:
             --max-wait-time 64800 \
             --max-wait-pending-time 21600 \
             --max-wait-running-time 43200 \
-            --required-job required-validation
+            --required-job required-validation \
+            --task-id "${{ steps.trigger-ci.outputs.ci_task_id || steps.pre-check.outputs.ci_task_id }}"
 
       - name: Update commit status
         if: always() && github.event_name == 'workflow_dispatch' && steps.review-gate.outputs.head_sha != ''
