@@ -130,6 +130,8 @@ def wait_status(args):
     max_wait_pending_time = args.max_wait_pending_time
     max_wait_running_time = args.max_wait_running_time
     expected_task_id = str(getattr(args, "task_id", "") or "")
+    if not expected_task_id:
+        raise GateError("Error: taskId is required to wait for an exact CI run")
     overall_start = time.time()
     running_start = None  # type: float
 
@@ -138,9 +140,6 @@ def wait_status(args):
         response = retrieve_task_status(args.commit_id, args.security, args.repository)
         if not _response_identity_matches(response, args.commit_id, expected_task_id):
             raise GateError("Error: CI status response identity does not match the requested run")
-        if not expected_task_id:
-            expected_task_id = str(response["taskId"])
-            log("Bound CI wait to taskId: %s" % expected_task_id)
         current_time = time.time()
         overall_elapsed = int(current_time - overall_start)
         if overall_elapsed > max_wait_time:

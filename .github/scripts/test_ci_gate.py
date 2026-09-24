@@ -880,10 +880,16 @@ class TestWaitStatus(unittest.TestCase):
             "max_wait_time": 9999,
             "max_wait_pending_time": 9999,
             "max_wait_running_time": 9999,
-            "task_id": "",
+            "task_id": "1",
         }
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
+
+    @patch("ci_gate.ci.retrieve_task_status")
+    def test_missing_task_id_fails_before_polling(self, mock_status):
+        with self.assertRaises(GateError):
+            wait_status(self._args(task_id=""))
+        mock_status.assert_not_called()
 
     @patch("ci_gate.ci.time.sleep")
     @patch("ci_gate.ci.retrieve_task_status")

@@ -157,6 +157,10 @@ jobs:
           else
             echo "CI not completed, will trigger new CI"
           fi
+          if ! grep -Eq '^ci_action=(done|wait|trigger)$' "$GITHUB_OUTPUT"; then
+            echo "CI pre-check failed without a valid action" >&2
+            exit 1
+          fi
 
       - name: Trigger CI
         id: trigger-ci
