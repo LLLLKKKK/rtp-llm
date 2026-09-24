@@ -222,9 +222,9 @@ def trigger_ci(args):
     status = str(body.get("status", "")).upper()
     if status in {"FAILED", "ERROR"}:
         raise GateError("::error::CI trigger failed: %s" % body)
-    task_id = body.get("taskId")
+    task_id = body.get("taskId") or body.get("pipelineRunId")
     if task_id is None and isinstance(body.get("data"), dict):
-        task_id = body["data"].get("taskId")
+        task_id = body["data"].get("taskId") or body["data"].get("pipelineRunId")
     if task_id is None:
         raise GateError("::error::CI trigger response is missing taskId")
     write_output("ci_task_id", str(task_id), getattr(args, "output_file", ""))
