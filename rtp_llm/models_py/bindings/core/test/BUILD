@@ -123,11 +123,10 @@ cc_test_wrapper(
         },
         "//conditions:default": {},
     }),
-    tags = select({
-        "@//:using_cuda": ["H20_CU13"],
-        "@//:using_rocm": ["MI308X-ROCM7"],
-        "//conditions:default": [],
-    }),
+    tags = [
+        "H20_CU13",
+        "MI308X-ROCM7",
+    ],
     # Own dep list rather than exec_ops_test_deps: that one is unconditionally
     # CUDA-only. cache_store_async_writer is deliberately under-linked, so each
     # platform has to supply the provider for its runtime* symbols.
