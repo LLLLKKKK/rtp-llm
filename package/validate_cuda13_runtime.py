@@ -37,7 +37,9 @@ CUDA_LIBRARY_RE = re.compile(
     r"nvJitLink|cusolver|cusparse|curand|cufft|nvshmem(?:_[^.]+)?)\.so"
 )
 UNAMBIGUOUS_CUDA12_RE = re.compile(r"^lib(?:cudart|cupti)\.so\.12(?:\.|$)")
-CUDA12_PATH_RE = re.compile(r"(?:^|[/+_.-])cu(?:da)?12(?:[/.+_-]|$)", re.IGNORECASE)
+CUDA12_PATH_RE = re.compile(
+    r"(?:^|[/+_.-])cu(?:da)?[-_.]?12(?:[0-9]*|[/+_.-]|$)", re.IGNORECASE
+)
 CUDA12_DIST_RE = re.compile(r"(?:^|[-_.+])cu12(?:[0-9]*|[-_.+]|$)", re.IGNORECASE)
 
 

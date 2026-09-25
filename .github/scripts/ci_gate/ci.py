@@ -45,6 +45,10 @@ def _response_identity_matches(response, commit_id, task_id=""):
 
 def pre_check_status(args):
     # type: (argparse.Namespace) -> int
+    if getattr(args, "force_fresh", False):
+        log("Required validation needs a fresh CI run for the current source pair")
+        _write_pre_check_action(args, "trigger")
+        return 1
     max_attempts = args.max_attempts
     sleep_interval = args.sleep_interval
     main_status = "UNKNOWN"
@@ -191,13 +195,17 @@ def trigger_ci(args):
     try:
         branch_info = get_branch_info(branch_name, github_repository, args.commit_id, args.security)
     except GateError as exc:
-        raise GateError(
-            "Error: cannot resolve the internal commit for %s: %s"
-            % (branch_name, exc)
-        ) from exc
-    current_internal_commit_id = str(((branch_info.get("commit") or {}).get("id")) or "")
-    if not current_internal_commit_id:
-        raise GateError("Error: branch info is missing the internal commit ID")
+        if "Branch not found" not in str(exc):
+            raise GateError(
+                "Error: cannot resolve the internal commit for %s: %s"
+                % (branch_name, exc)
+            ) from exc
+        log("Internal branch %s does not exist yet; CREATE-TASK will create it" % branch_name)
+        current_internal_commit_id = "UNKNOWN"
+    else:
+        current_internal_commit_id = str(((branch_info.get("commit") or {}).get("id")) or "")
+        if not current_internal_commit_id:
+            raise GateError("Error: branch info is missing the internal commit ID")
 
     payload = {
         "type": "CREATE-TASK",

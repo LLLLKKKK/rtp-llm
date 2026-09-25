@@ -700,6 +700,7 @@ class TestPreCheckStatus(unittest.TestCase):
             "max_attempts": 2,
             "sleep_interval": 0,
             "output_file": "",
+            "force_fresh": False,
         }
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
@@ -717,6 +718,17 @@ class TestPreCheckStatus(unittest.TestCase):
         result, output = self._run_with_output(mock_status, {"status": "SUCCESS", "commitId": "abc123", "taskId": "1"})
         self.assertEqual(result, 0)
         self.assertIn("ci_action=done", output)
+
+    @patch("ci_gate.ci.retrieve_task_status")
+    def test_force_fresh_triggers_without_lookup(self, mock_status):
+        with tempfile.NamedTemporaryFile(mode="r+") as output:
+            result = pre_check_status(
+                self._args(output_file=output.name, force_fresh=True)
+            )
+            output.seek(0)
+            self.assertEqual(result, 1)
+            self.assertIn("ci_action=trigger", output.read())
+        mock_status.assert_not_called()
 
     @patch("ci_gate.ci.retrieve_task_status")
     def test_mismatched_commit_triggers(self, mock_status):
@@ -1028,6 +1040,16 @@ class TestTriggerCi(unittest.TestCase):
         mock_branch.side_effect = GateError("Network error")
         with self.assertRaises(GateError):
             trigger_ci(self._args())
+
+    @patch("ci_gate.ci.ci_service_request")
+    @patch("ci_gate.ci.get_branch_info")
+    def test_missing_internal_branch_triggers_creation(self, mock_branch, mock_ci):
+        mock_branch.side_effect = GateError("Error: Failed to query branch info - Branch not found")
+        mock_ci.return_value = {"success": True, "status": "CREATED", "taskId": "55"}
+        result = trigger_ci(self._args())
+        self.assertEqual(result, 0)
+        payload = mock_ci.call_args.args[0]
+        self.assertEqual(payload["currentInternalCommitId"], "UNKNOWN")
 
     @patch("ci_gate.ci.ci_service_request")
     @patch("ci_gate.ci.get_branch_info")

@@ -9,7 +9,7 @@ ARG EXPECT_FAST_HADAMARD=0
 ARG EXPECT_FLASH_ATTN_2=0
 ADD $WHL_FILE /tmp/$WHL_FILE
 ADD $REQUIREMENTS_LOCK_FILE /tmp/runtime-requirements.lock
-ADD package/validate_cuda13_runtime.py /tmp/validate_cuda13_runtime.py
+ADD validate_cuda13_runtime.py /tmp/validate_cuda13_runtime.py
 RUN /opt/conda310/bin/pip install uv -i https://mirrors.aliyun.com/pypi/simple/
 RUN /opt/conda310/bin/uv pip sync \
         --require-hashes \

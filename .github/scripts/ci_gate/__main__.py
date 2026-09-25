@@ -64,6 +64,7 @@ def main(argv):
     pre_check.add_argument("--sleep-interval", type=int, default=20)
     pre_check.add_argument("--output-file", default="")
     pre_check.add_argument("--required-job", default="")
+    pre_check.add_argument("--force-fresh", action="store_true")
 
     wait = subparsers.add_parser("wait-status")
     wait.add_argument("commit_id")

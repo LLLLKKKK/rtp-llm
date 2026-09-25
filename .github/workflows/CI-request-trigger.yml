@@ -152,6 +152,7 @@ jobs:
             --max-attempts 6 \
             --sleep-interval 20 \
             --required-job required-validation \
+            --force-fresh \
             --output-file "$GITHUB_OUTPUT"; then
             echo "CI already completed or running, will not trigger duplicate CI"
           else
