@@ -32,12 +32,9 @@ TOP_LEVEL_PATTERNS = (
 )
 HOST_DRIVER_LIBRARIES = {"libcuda.so.1", "libnvidia-ml.so.1"}
 FORBIDDEN_NEEDED = {"visibility=hidden"}
-DEPENDENCY_RE = re.compile(
-    r"\((?:NEEDED|AUXILIARY|FILTER)\).*library: \[([^]]+)\]", re.IGNORECASE
-)
-SEARCH_PATH_RE = re.compile(
-    r"\((?:RPATH|RUNPATH)\).*Library (?:rpath|runpath): \[([^]]*)\]"
-)
+DYNAMIC_TAGS = ("NEEDED", "AUXILIARY", "FILTER")
+SEARCH_PATH_TAGS = ("RPATH", "RUNPATH")
+BRACKET_VALUE_RE = re.compile(r"\[([^]]*)\]")
 CUDA_LIBRARY_RE = re.compile(
     r"^lib(?:cudart|cupti|cublas(?:Lt)?|cudnn(?:_[^.]+)?|nccl|nvrtc|"
     r"nvJitLink|cusolver|cusparse|curand|cufft|nvshmem(?:_[^.]+)?)\.so"
@@ -54,19 +51,18 @@ def fail(message):
     raise SystemExit(1)
 
 
-def is_dynamic_elf(path):
+def elf_identity(path):
     try:
         with path.open("rb") as stream:
-            header = stream.read(18)
+            header = stream.read(20)
     except OSError:
-        return False
-    if len(header) < 18 or header[:4] != b"\x7fELF":
-        return False
+        return None
+    if len(header) < 20 or header[:4] != b"\x7fELF":
+        return None
     endian = {1: "<", 2: ">"}.get(header[5])
-    return endian is not None and struct.unpack(f"{endian}H", header[16:18])[0] in (
-        2,
-        3,
-    )
+    if endian is None or struct.unpack(f"{endian}H", header[16:18])[0] not in (2, 3):
+        return None
+    return header[4], struct.unpack(f"{endian}H", header[18:20])[0]
 
 
 def iter_files(root, seen_directories, seen_files):
@@ -156,7 +152,21 @@ def find_readelf():
     return resolved
 
 
-def dynamic_metadata(readelf, inspection_environment, path):
+def dynamic_values(output, tags):
+    values = {tag: [] for tag in tags}
+    for line in output.splitlines():
+        upper = line.upper()
+        value = BRACKET_VALUE_RE.search(line)
+        if value is None:
+            continue
+        for tag in tags:
+            if f"({tag})" in upper or re.search(rf"(^|\s){tag}(\s|$)", upper):
+                values[tag].append(value.group(1))
+                break
+    return values
+
+
+def dynamic_metadata(readelf, inspection_environment, path, platform_name):
     result = subprocess.run(
         [readelf, "-d", str(path)],
         env=inspection_environment,
@@ -167,30 +177,38 @@ def dynamic_metadata(readelf, inspection_environment, path):
     )
     if result.returncode:
         raise RuntimeError(result.stdout.strip())
-    needed = DEPENDENCY_RE.findall(result.stdout)
-    search_paths = []
-    for value in SEARCH_PATH_RE.findall(result.stdout):
-        for item in value.split(":"):
-            item = item.strip().strip("'")
-            item = item.replace("${ORIGIN}", str(path.parent))
-            item = item.replace("$ORIGIN", str(path.parent))
-            item = item.replace("${LIB}", "lib64").replace("$LIB", "lib64")
-            item = item.replace("${PLATFORM}", os.uname().machine)
-            item = item.replace("$PLATFORM", os.uname().machine)
-            if item:
-                search_paths.append(Path(item))
-    return needed, search_paths
+    needed_by_tag = dynamic_values(result.stdout, DYNAMIC_TAGS)
+    search_values = dynamic_values(result.stdout, SEARCH_PATH_TAGS)
+    search_paths = {tag: [] for tag in SEARCH_PATH_TAGS}
+    for kind, values in search_values.items():
+        for value in values:
+            for item in value.split(":"):
+                item = item.strip().strip("'")
+                item = item.replace("${ORIGIN}", str(path.parent))
+                item = item.replace("$ORIGIN", str(path.parent))
+                item = item.replace("${LIB}", "lib64").replace("$LIB", "lib64")
+                item = item.replace("${PLATFORM}", platform_name)
+                item = item.replace("$PLATFORM", platform_name)
+                if item:
+                    search_paths[kind].append(Path(item))
+    dependencies = []
+    for tag in DYNAMIC_TAGS:
+        dependencies.extend(needed_by_tag[tag])
+    return dependencies, search_paths
 
 
-def resolve_library(name, search_paths):
-    if "/" in name:
-        candidate = Path(name)
-        return candidate.resolve() if candidate.is_file() else None
-    for directory in search_paths:
-        candidate = directory / name
-        if candidate.is_file():
-            return candidate.resolve()
-    return None
+def resolve_library(name, search_paths, expected_identity):
+    incompatible = []
+    candidates = [Path(name)] if "/" in name else [path / name for path in search_paths]
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        provider = candidate.resolve()
+        provider_identity = elf_identity(provider)
+        if provider_identity == expected_identity:
+            return provider, incompatible
+        incompatible.append((provider, provider_identity))
+    return None, incompatible
 
 
 def main():
@@ -220,7 +238,10 @@ def main():
     if not roots:
         fail("no runtime package roots found")
 
-    library_directories = [
+    environment_library_directories = [
+        Path(path) for path in os.environ.get("LD_LIBRARY_PATH", "").split(":") if path
+    ]
+    default_library_directories = [
         platlib / "rtp_llm/libs",
         platlib / "torch/lib",
         platlib / "nvidia/cu13/lib",
@@ -241,14 +262,16 @@ def main():
         Path("/lib"),
         Path("/usr/lib"),
     ]
-    library_directories.extend(platlib.glob("nvidia/*/lib"))
-    library_directories.extend(
-        Path(path) for path in os.environ.get("LD_LIBRARY_PATH", "").split(":") if path
-    )
+    default_library_directories.extend(platlib.glob("nvidia/*/lib"))
     for base in (Path("/lib"), Path("/usr/lib")):
         if base.is_dir():
-            library_directories.extend(base.glob("*-linux-gnu"))
-    library_directories = [path for path in library_directories if path.is_dir()]
+            default_library_directories.extend(base.glob("*-linux-gnu"))
+    environment_library_directories = [
+        path for path in environment_library_directories if path.is_dir()
+    ]
+    default_library_directories = [
+        path for path in default_library_directories if path.is_dir()
+    ]
 
     certified_roots = [platlib / "nvidia", platlib / "torch/lib"]
     for path in (Path("/usr/local/cuda"), Path("/usr/local/PPU_SDK")):
@@ -264,33 +287,74 @@ def main():
     seed_elfs = []
     for root in roots:
         seed_elfs.extend(iter_files(root, seen_directories, seen_files))
-    seed_elfs = sorted(path for path in seed_elfs if is_dynamic_elf(path))
+    seed_elfs = sorted(path for path in seed_elfs if elf_identity(path) is not None)
     if not seed_elfs:
         fail("runtime package roots contain no dynamic ELF files")
 
     failures = []
-    inspected = set()
-    pending = list(seed_elfs)
+    inspected_states = set()
+    inspected_files = set()
+    pending = [(path, ()) for path in seed_elfs]
     while pending:
-        elf = pending.pop()
-        if elf in inspected:
+        elf, inherited_rpath = pending.pop()
+        state = (elf, inherited_rpath)
+        if state in inspected_states:
             continue
-        inspected.add(elf)
+        inspected_states.add(state)
+        inspected_files.add(elf)
+        identity = elf_identity(elf)
+        if identity is None:
+            failures.append(f"{elf}: resolved provider is not a dynamic ELF")
+            continue
+        platform_name = {62: "x86_64", 183: "aarch64"}.get(
+            identity[1], str(identity[1])
+        )
         try:
             needed, object_search_paths = dynamic_metadata(
-                readelf, inspection_environment, elf
+                readelf, inspection_environment, elf, platform_name
             )
         except RuntimeError as error:
             failures.append(f"{elf}: readelf failed: {error}")
             continue
-        search_paths = object_search_paths + library_directories
+        current_rpath = tuple(
+            dict.fromkeys(
+                path for path in object_search_paths["RPATH"] if path.is_dir()
+            )
+        )
+        inherited_rpath = tuple(path for path in inherited_rpath if path.is_dir())
+        effective_rpath = tuple(dict.fromkeys(current_rpath + inherited_rpath))
+        runpath = [path for path in object_search_paths["RUNPATH"] if path.is_dir()]
+        if runpath:
+            search_paths = (
+                list(inherited_rpath)
+                + environment_library_directories
+                + runpath
+                + default_library_directories
+            )
+        else:
+            search_paths = (
+                list(effective_rpath)
+                + environment_library_directories
+                + default_library_directories
+            )
+        search_paths = list(dict.fromkeys(search_paths))
         for library_name in needed:
             if library_name in FORBIDDEN_NEEDED:
                 failures.append(f"{elf}: forbidden dependency {library_name}")
                 continue
-            provider = resolve_library(library_name, search_paths)
+            provider, incompatible = resolve_library(
+                library_name, search_paths, identity
+            )
             if provider is None:
-                if library_name not in HOST_DRIVER_LIBRARIES:
+                if incompatible:
+                    details = ", ".join(
+                        f"{path} ({provider_identity})"
+                        for path, provider_identity in incompatible
+                    )
+                    failures.append(
+                        f"{elf}: dependency {library_name} has incompatible providers: {details}"
+                    )
+                elif library_name not in HOST_DRIVER_LIBRARIES:
                     failures.append(f"{elf}: unresolved dependency {library_name}")
                 continue
             owner = bad_owned_files.get(provider)
@@ -311,8 +375,8 @@ def main():
                     f"{elf}: CUDA provider is outside certified CUDA 13 roots: "
                     f"{library_name} => {provider}"
                 )
-            if is_dynamic_elf(provider) and provider not in inspected:
-                pending.append(provider)
+            if provider not in inspected_files:
+                pending.append((provider, effective_rpath))
 
     if failures:
         print("ERROR: runtime ELF closure validation failed:", file=sys.stderr)
@@ -320,7 +384,7 @@ def main():
             print(f"  {failure}", file=sys.stderr)
         raise SystemExit(1)
     print(
-        f"validated runtime ELF closure for {len(inspected)} dynamic object(s) "
+        f"validated runtime ELF closure for {len(inspected_files)} dynamic object(s) "
         f"from {len(seed_elfs)} seed(s)"
     )
 
