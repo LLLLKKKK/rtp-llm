@@ -30,10 +30,14 @@ TOP_LEVEL_PATTERNS = (
     "flash_attn_2_cuda*.so*",
     "fast_hadamard_transform_cuda*.so*",
 )
-UNRESOLVED_RE = re.compile(r"^\s*(\S+)\s+=>\s+not found(?:\s|$)")
-RESOLVED_RE = re.compile(r"^\s*(\S+)\s+=>\s+(/\S+)(?:\s|$)")
 HOST_DRIVER_LIBRARIES = {"libcuda.so.1", "libnvidia-ml.so.1"}
-DIRECT_RE = re.compile(r"^\s*(/\S+)(?:\s|$)")
+FORBIDDEN_NEEDED = {"visibility=hidden"}
+DEPENDENCY_RE = re.compile(
+    r"\((?:NEEDED|AUXILIARY|FILTER)\).*library: \[([^]]+)\]", re.IGNORECASE
+)
+SEARCH_PATH_RE = re.compile(
+    r"\((?:RPATH|RUNPATH)\).*Library (?:rpath|runpath): \[([^]]*)\]"
+)
 CUDA_LIBRARY_RE = re.compile(
     r"^lib(?:cudart|cupti|cublas(?:Lt)?|cudnn(?:_[^.]+)?|nccl|nvrtc|"
     r"nvJitLink|cusolver|cusparse|curand|cufft|nvshmem(?:_[^.]+)?)\.so"
@@ -136,14 +140,57 @@ def under(path, root):
         return False
 
 
-def find_tool(name, candidates):
+def find_readelf():
+    candidates = (
+        "/usr/bin/readelf",
+        "/bin/readelf",
+        "/usr/bin/eu-readelf",
+        "/usr/local/PPU_SDK/bin/llvm-readelf",
+    )
     for candidate in candidates:
         if Path(candidate).is_file() and os.access(candidate, os.X_OK):
             return candidate
-    resolved = shutil.which(name)
+    resolved = shutil.which("readelf")
     if not resolved:
-        fail(f"required ELF inspection tool is missing: {name}")
+        fail("required ELF inspection tool is missing: readelf")
     return resolved
+
+
+def dynamic_metadata(readelf, inspection_environment, path):
+    result = subprocess.run(
+        [readelf, "-d", str(path)],
+        env=inspection_environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    if result.returncode:
+        raise RuntimeError(result.stdout.strip())
+    needed = DEPENDENCY_RE.findall(result.stdout)
+    search_paths = []
+    for value in SEARCH_PATH_RE.findall(result.stdout):
+        for item in value.split(":"):
+            item = item.strip().strip("'")
+            item = item.replace("${ORIGIN}", str(path.parent))
+            item = item.replace("$ORIGIN", str(path.parent))
+            item = item.replace("${LIB}", "lib64").replace("$LIB", "lib64")
+            item = item.replace("${PLATFORM}", os.uname().machine)
+            item = item.replace("$PLATFORM", os.uname().machine)
+            if item:
+                search_paths.append(Path(item))
+    return needed, search_paths
+
+
+def resolve_library(name, search_paths):
+    if "/" in name:
+        candidate = Path(name)
+        return candidate.resolve() if candidate.is_file() else None
+    for directory in search_paths:
+        candidate = directory / name
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
 
 
 def main():
@@ -157,16 +204,7 @@ def main():
     if args.expected_cuda_major != 13:
         fail(f"this validator only supports CUDA 13, got {args.expected_cuda_major}")
 
-    readelf = find_tool(
-        "readelf",
-        (
-            "/usr/bin/readelf",
-            "/bin/readelf",
-            "/usr/bin/eu-readelf",
-            "/usr/local/PPU_SDK/bin/llvm-readelf",
-        ),
-    )
-    ldd = find_tool("ldd", ("/usr/bin/ldd", "/bin/ldd"))
+    readelf = find_readelf()
     inspection_environment = os.environ.copy()
     inspection_environment.pop("LD_LIBRARY_PATH", None)
     platlib = args.platlib.resolve()
@@ -187,16 +225,30 @@ def main():
         platlib / "torch/lib",
         platlib / "nvidia/cu13/lib",
         platlib / "nvidia/nvshmem/lib",
+        Path("/opt/conda310/lib"),
+        Path("/usr/local/cuda/lib64"),
+        Path("/usr/local/cuda/targets/x86_64-linux/lib"),
+        Path("/usr/local/cuda/targets/aarch64-linux/lib"),
+        Path("/usr/local/cuda/targets/sbsa-linux/lib"),
+        Path("/usr/local/PPU_SDK/lib"),
+        Path("/usr/local/PPU_SDK/CUDA_SDK/lib64"),
+        Path("/usr/local/PPU_SDK/CUDA_SDK/targets/x86_64-linux/lib"),
+        Path("/usr/local/PPU_SDK/sailSHMEM/lib"),
+        Path("/usr/local/lib64"),
+        Path("/usr/local/lib"),
+        Path("/lib64"),
+        Path("/usr/lib64"),
+        Path("/lib"),
+        Path("/usr/lib"),
     ]
     library_directories.extend(platlib.glob("nvidia/*/lib"))
     library_directories.extend(
         Path(path) for path in os.environ.get("LD_LIBRARY_PATH", "").split(":") if path
     )
-    loader_environment = os.environ.copy()
-    loader_environment["LC_ALL"] = "C"
-    loader_environment["LD_LIBRARY_PATH"] = ":".join(
-        str(path) for path in library_directories if path.is_dir()
-    )
+    for base in (Path("/lib"), Path("/usr/lib")):
+        if base.is_dir():
+            library_directories.extend(base.glob("*-linux-gnu"))
+    library_directories = [path for path in library_directories if path.is_dir()]
 
     certified_roots = [platlib / "nvidia", platlib / "torch/lib"]
     for path in (Path("/usr/local/cuda"), Path("/usr/local/PPU_SDK")):
@@ -209,59 +261,38 @@ def main():
 
     seen_directories = set()
     seen_files = set()
-    elf_files = []
+    seed_elfs = []
     for root in roots:
-        elf_files.extend(iter_files(root, seen_directories, seen_files))
-    elf_files = sorted(path for path in elf_files if is_dynamic_elf(path))
-    if not elf_files:
+        seed_elfs.extend(iter_files(root, seen_directories, seen_files))
+    seed_elfs = sorted(path for path in seed_elfs if is_dynamic_elf(path))
+    if not seed_elfs:
         fail("runtime package roots contain no dynamic ELF files")
 
     failures = []
-    checked = 0
-    for elf in elf_files:
-        dynamic = subprocess.run(
-            [readelf, "-d", str(elf)],
-            env=inspection_environment,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )
-        if dynamic.returncode:
-            failures.append(f"{elf}: readelf failed: {dynamic.stdout.strip()}")
+    inspected = set()
+    pending = list(seed_elfs)
+    while pending:
+        elf = pending.pop()
+        if elf in inspected:
             continue
-        if "(NEEDED)" not in dynamic.stdout:
+        inspected.add(elf)
+        try:
+            needed, object_search_paths = dynamic_metadata(
+                readelf, inspection_environment, elf
+            )
+        except RuntimeError as error:
+            failures.append(f"{elf}: readelf failed: {error}")
             continue
-        inspected = subprocess.run(
-            [ldd, str(elf)],
-            env=loader_environment,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )
-        checked += 1
-        output = inspected.stdout.strip()
-        if inspected.returncode:
-            failures.append(f"{elf}: ldd failed ({inspected.returncode}): {output}")
-            continue
-        for line in output.splitlines():
-            unresolved = UNRESOLVED_RE.match(line)
-            if unresolved:
-                library_name = unresolved.group(1)
+        search_paths = object_search_paths + library_directories
+        for library_name in needed:
+            if library_name in FORBIDDEN_NEEDED:
+                failures.append(f"{elf}: forbidden dependency {library_name}")
+                continue
+            provider = resolve_library(library_name, search_paths)
+            if provider is None:
                 if library_name not in HOST_DRIVER_LIBRARIES:
                     failures.append(f"{elf}: unresolved dependency {library_name}")
                 continue
-            resolved = RESOLVED_RE.match(line)
-            if resolved:
-                library_name, resolved_name = resolved.groups()
-                provider = Path(resolved_name).resolve()
-            else:
-                direct = DIRECT_RE.match(line)
-                if not direct:
-                    continue
-                provider = Path(direct.group(1)).resolve()
-                library_name = provider.name
             owner = bad_owned_files.get(provider)
             if (
                 UNAMBIGUOUS_CUDA12_RE.match(library_name)
@@ -280,13 +311,18 @@ def main():
                     f"{elf}: CUDA provider is outside certified CUDA 13 roots: "
                     f"{library_name} => {provider}"
                 )
+            if is_dynamic_elf(provider) and provider not in inspected:
+                pending.append(provider)
 
     if failures:
         print("ERROR: runtime ELF closure validation failed:", file=sys.stderr)
         for failure in sorted(set(failures)):
             print(f"  {failure}", file=sys.stderr)
         raise SystemExit(1)
-    print(f"validated runtime ELF closure for {checked} dynamic object(s)")
+    print(
+        f"validated runtime ELF closure for {len(inspected)} dynamic object(s) "
+        f"from {len(seed_elfs)} seed(s)"
+    )
 
 
 if __name__ == "__main__":
