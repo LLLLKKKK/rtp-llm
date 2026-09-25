@@ -3,6 +3,7 @@ import argparse
 import importlib.metadata
 import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -31,6 +32,7 @@ TOP_LEVEL_PATTERNS = (
 )
 UNRESOLVED_RE = re.compile(r"^\s*(\S+)\s+=>\s+not found(?:\s|$)")
 RESOLVED_RE = re.compile(r"^\s*(\S+)\s+=>\s+(/\S+)(?:\s|$)")
+HOST_DRIVER_LIBRARIES = {"libcuda.so.1", "libnvidia-ml.so.1"}
 DIRECT_RE = re.compile(r"^\s*(/\S+)(?:\s|$)")
 CUDA_LIBRARY_RE = re.compile(
     r"^lib(?:cudart|cupti|cublas(?:Lt)?|cudnn(?:_[^.]+)?|nccl|nvrtc|"
@@ -134,6 +136,16 @@ def under(path, root):
         return False
 
 
+def find_tool(name, candidates):
+    for candidate in candidates:
+        if Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    resolved = shutil.which(name)
+    if not resolved:
+        fail(f"required ELF inspection tool is missing: {name}")
+    return resolved
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--expected-cuda-major", type=int, required=True)
@@ -145,6 +157,18 @@ def main():
     if args.expected_cuda_major != 13:
         fail(f"this validator only supports CUDA 13, got {args.expected_cuda_major}")
 
+    readelf = find_tool(
+        "readelf",
+        (
+            "/usr/bin/readelf",
+            "/bin/readelf",
+            "/usr/bin/eu-readelf",
+            "/usr/local/PPU_SDK/bin/llvm-readelf",
+        ),
+    )
+    ldd = find_tool("ldd", ("/usr/bin/ldd", "/bin/ldd"))
+    inspection_environment = os.environ.copy()
+    inspection_environment.pop("LD_LIBRARY_PATH", None)
     platlib = args.platlib.resolve()
     roots = [path.resolve() for path in args.root]
     if not roots:
@@ -196,7 +220,8 @@ def main():
     checked = 0
     for elf in elf_files:
         dynamic = subprocess.run(
-            ["readelf", "-d", str(elf)],
+            [readelf, "-d", str(elf)],
+            env=inspection_environment,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -208,7 +233,7 @@ def main():
         if "(NEEDED)" not in dynamic.stdout:
             continue
         inspected = subprocess.run(
-            ["ldd", str(elf)],
+            [ldd, str(elf)],
             env=loader_environment,
             text=True,
             stdout=subprocess.PIPE,
@@ -223,7 +248,9 @@ def main():
         for line in output.splitlines():
             unresolved = UNRESOLVED_RE.match(line)
             if unresolved:
-                failures.append(f"{elf}: unresolved dependency {unresolved.group(1)}")
+                library_name = unresolved.group(1)
+                if library_name not in HOST_DRIVER_LIBRARIES:
+                    failures.append(f"{elf}: unresolved dependency {library_name}")
                 continue
             resolved = RESOLVED_RE.match(line)
             if resolved:
