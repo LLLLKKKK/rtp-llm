@@ -9,10 +9,13 @@ ARG EXPECT_FAST_HADAMARD=0
 ARG EXPECT_FLASH_ATTN_2=0
 ADD $WHL_FILE /tmp/$WHL_FILE
 ADD $REQUIREMENTS_LOCK_FILE /tmp/runtime-requirements.lock
+ADD package/validate_cuda13_runtime.py /tmp/validate_cuda13_runtime.py
 RUN /opt/conda310/bin/pip install uv -i https://mirrors.aliyun.com/pypi/simple/
 RUN /opt/conda310/bin/uv pip sync \
         --require-hashes \
         /tmp/runtime-requirements.lock \
+        -i https://mirrors.aliyun.com/pypi/simple/ \
+        --index-strategy unsafe-best-match \
         --python=/opt/conda310/bin/python \
         --verbose && \
     /opt/conda310/bin/python -m pip install --no-deps /tmp/$WHL_FILE && \
@@ -108,6 +111,12 @@ RUN if [ "${EXPECT_FLASHINFER_RUNTIME_LIBS:-}" = "1" ]; then \
             echo "${MISSING_FLASHINFER_DEPS}" >&2; \
             exit 1; \
         fi; \
+    fi
+
+RUN if [ "${EXPECTED_CUDA_MAJOR:-}" = "13" ]; then \
+        /opt/conda310/bin/python /tmp/validate_cuda13_runtime.py \
+            --expected-cuda-major 13 && \
+        rm -f /tmp/validate_cuda13_runtime.py; \
     fi
 
 ARG START_FILE
