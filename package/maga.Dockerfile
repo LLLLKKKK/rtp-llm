@@ -1,16 +1,30 @@
 ENV LD_LIBRARY_PATH=/opt/conda310/lib/python3.10/site-packages/nvidia/nvshmem/lib:/usr/local/nvidia/lib64:/usr/lib64:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
 ARG WHL_FILE
+ARG REQUIREMENTS_LOCK_FILE
 ARG EXPECTED_CUDA_MAJOR
 ARG REQUIRE_COMPUTE_OPS=1
 ARG EXPECT_FLASHINFER_RUNTIME_LIBS=0
-ARG PYTORCH_WHEEL_INDEX=https://download.pytorch.org/whl/cu126
+ARG EXPECT_FAST_HADAMARD=0
+ARG EXPECT_FLASH_ATTN_2=0
 ADD $WHL_FILE /tmp/$WHL_FILE
-RUN /opt/conda310/bin/pip install /tmp/$WHL_FILE \
-    -i https://artifacts.antgroup-inc.cn/simple/ \
-    --extra-index-url=https://mirrors.aliyun.com/pypi/simple/ \
-    --extra-index-url=${PYTORCH_WHEEL_INDEX} \
-    && rm /tmp/$WHL_FILE
+ADD $REQUIREMENTS_LOCK_FILE /tmp/runtime-requirements.lock
+RUN /opt/conda310/bin/pip install uv -i https://mirrors.aliyun.com/pypi/simple/
+RUN /opt/conda310/bin/uv pip sync \
+        --require-hashes \
+        /tmp/runtime-requirements.lock \
+        --python=/opt/conda310/bin/python \
+        --verbose && \
+    /opt/conda310/bin/python -m pip install --no-deps /tmp/$WHL_FILE && \
+    rm /tmp/$WHL_FILE /tmp/runtime-requirements.lock
+
+RUN if [ "${EXPECT_FAST_HADAMARD:-}" = "1" ]; then \
+        /opt/conda310/bin/python -c 'import importlib.metadata as m; from fast_hadamard_transform import hadamard_transform; version=m.version("fast-hadamard-transform"); assert version == "1.1.0+e7706fa.cu132.torch2.11.cxx11abitrue", version; assert callable(hadamard_transform); print("validated fast-hadamard-transform", version)'; \
+    fi
+
+RUN if [ "${EXPECT_FLASH_ATTN_2:-}" = "1" ]; then \
+        /opt/conda310/bin/python -c 'import importlib.metadata as m; import torch; import flash_attn_2_cuda; from flash_attn import flash_attn_func, flash_attn_varlen_func; from flash_attn.bert_padding import pad_input, unpad_input; version=m.version("flash-attn"); assert version == "2.8.3.post1+cu13torch2.11cxx11abitrue.r1", version; assert all(callable(fn) for fn in (flash_attn_func, flash_attn_varlen_func, pad_input, unpad_input)); print("validated flash-attn", version)'; \
+    fi
 
 # Reject CUDA 12-linked runtime packages at the CUDA 13 packaging boundary.
 RUN if [ "${EXPECTED_CUDA_MAJOR:-}" = "13" ]; then \
@@ -37,6 +51,15 @@ RUN if [ "${EXPECTED_CUDA_MAJOR:-}" = "13" ]; then \
                         printf "%s\n" "$elf"; \
                     fi; \
                 done' sh {} +; \
+        done; \
+        for elf in \
+            /opt/conda310/lib/python3.10/site-packages/fast_hadamard_transform_cuda*.so \
+            /opt/conda310/lib/python3.10/site-packages/flash_attn_2_cuda*.so; do \
+            [ -f "$elf" ] || continue; \
+            dynamic_section=$(readelf -d "$elf") || exit 1; \
+            if printf "%s\n" "$dynamic_section" | grep -Eq "NEEDED.*lib(cudart|cupti)\.so\.12"; then \
+                printf "%s\n" "$elf"; \
+            fi; \
         done)"; then \
             echo "ERROR: failed to inspect runtime ELF dependencies" >&2; \
             exit 1; \
