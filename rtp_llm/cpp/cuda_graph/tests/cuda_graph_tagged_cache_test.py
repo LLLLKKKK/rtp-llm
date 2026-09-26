@@ -109,8 +109,7 @@ class StaticTokenMetadataTailModel:
     def forward(self, inputs: PyModelInputs, fmha_impl=None) -> PyModelOutputs:
         tail_signature = torch.stack(
             (
-                inputs.input_ids[-1]
-                + inputs.input_hiddens[-1].sum().to(torch.int32),
+                inputs.input_ids[-1] + inputs.input_hiddens[-1].sum().to(torch.int32),
                 inputs.combo_position_ids[-3],
                 inputs.combo_position_ids[-2],
                 inputs.combo_position_ids[-1],
@@ -695,15 +694,12 @@ class TestCudaGraphTaggedCache(unittest.TestCase):
                 snapshot, expected_signature.unsqueeze(0).expand_as(snapshot)
             )
 
-    @unittest.skipUnless(
-        torch.version.hip is not None, "ROCm-specific host-pointer ABI"
-    )
-    @unittest.skipUnless(
-        hasattr(torch.cuda, "_sleep"), "requires an asynchronous GPU delay"
-    )
     def test_rocm_replay_protects_captured_host_metadata_without_user_sync(
         self,
     ) -> None:
+        self.assertIsNotNone(
+            torch.version.hip, "Host metadata replay requires a ROCm build"
+        )
         runner = CudaGraphRunner()
         runner.init_prefill(
             CapturedHostLengthModel(),
@@ -768,11 +764,11 @@ class TestCudaGraphTaggedCache(unittest.TestCase):
         torch.testing.assert_close(output.hidden_states, expected)
 
     def test_dirty_capture_failure_is_fail_closed(self) -> None:
-        # A failed capture can poison allocator/stream state by design. The
-        # dedicated Bazel targets below run this test alone in a disposable
-        # process; normal tagged-cache suites skip it.
+        # Dirty capture poisons process-local allocator and stream state.
         if os.environ.get("RTP_LLM_RUN_DIRTY_CAPTURE_TEST") != "1":
-            self.skipTest("requires an isolated process for a dirty CUDA capture")
+            self.fail(
+                "Run in an isolated process with RTP_LLM_RUN_DIRTY_CAPTURE_TEST=1"
+            )
 
         def trigger_dirty_capture():
             runner = CudaGraphRunner()
@@ -1302,21 +1298,16 @@ class TestCudaGraphTaggedCache(unittest.TestCase):
                     expected_signature = torch.tensor(
                         [
                             graph_size * query_len,
-                            total_kv_length
-                            + (graph_size - batch_size) * query_len,
+                            total_kv_length + (graph_size - batch_size) * query_len,
                             graph_size * query_len,
-                            prefix_len + 1
-                            if batch_size == graph_size
-                            else query_len,
+                            prefix_len + 1 if batch_size == graph_size else query_len,
                         ],
                         dtype=output.hidden_states.dtype,
                         device=output.hidden_states.device,
                     )
                     torch.testing.assert_close(
                         output.hidden_states,
-                        expected_signature.unsqueeze(0).expand_as(
-                            output.hidden_states
-                        ),
+                        expected_signature.unsqueeze(0).expand_as(output.hidden_states),
                     )
 
     def test_target_verify_clears_static_token_metadata_after_shrink(self) -> None:
@@ -1416,9 +1407,7 @@ class TestCudaGraphTaggedCache(unittest.TestCase):
         runner.forward(full_inputs)
         torch.cuda.synchronize()
 
-        inputs = _build_decode_inputs(
-            GROUP_TAGS, {"full": 2, "aux": 1}, batch_size=3
-        )
+        inputs = _build_decode_inputs(GROUP_TAGS, {"full": 2, "aux": 1}, batch_size=3)
         self.assertTrue(runner.canRun(inputs))
         self.assertEqual(runner.getCurrentRealGraphSize(), 4)
 
@@ -1454,9 +1443,7 @@ class TestCudaGraphTaggedCache(unittest.TestCase):
         runner.forward(full_inputs)
         torch.cuda.synchronize()
 
-        inputs = _build_decode_inputs(
-            GROUP_TAGS, {"full": 2, "aux": 1}, batch_size=3
-        )
+        inputs = _build_decode_inputs(GROUP_TAGS, {"full": 2, "aux": 1}, batch_size=3)
         self.assertTrue(runner.canRun(inputs))
         output = runner.forward(inputs)
         torch.cuda.synchronize()
@@ -1500,9 +1487,27 @@ class TestCudaGraphTaggedCache(unittest.TestCase):
                     (batch_size, HIDDEN_SIZE * 2),
                     tuple(output.mtp_target_hidden_states.shape),
                 )
-                torch.testing.assert_close(
-                    output.mtp_target_hidden_states, expected
-                )
+                torch.testing.assert_close(output.mtp_target_hidden_states, expected)
+
+
+def load_tests(loader, tests, pattern):
+    excluded = set()
+    if os.environ.get("RTP_LLM_RUN_DIRTY_CAPTURE_TEST") != "1":
+        excluded.add("test_dirty_capture_failure_is_fail_closed")
+    if torch.version.hip is None:
+        excluded.add(
+            "test_rocm_replay_protects_captured_host_metadata_without_user_sync"
+        )
+    suite = unittest.TestSuite(
+        test
+        for test in loader.loadTestsFromTestCase(TestCudaGraphTaggedCache)
+        if test._testMethodName not in excluded
+    )
+    if suite.countTestCases() == 0:
+        raise ValueError(
+            "No applicable CUDA graph tests selected; check platform and isolation requirements"
+        )
+    return suite
 
 
 if __name__ == "__main__":
