@@ -262,21 +262,47 @@ def bootstrap_remote_jit_dir():
         logging.warning(f"[JIT] REMOTE_JIT_DIR refused ({e}); cold start later")
 
 
+def _ensure_writable_directory(path):
+    path = Path(path).expanduser().resolve()
+    try:
+        path.mkdir(mode=0o1777, parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return path if os.access(path, os.R_OK | os.W_OK | os.X_OK) else None
+
+
+def _local_jit_fallback(name):
+    remote = os.environ.get("REMOTE_JIT_DIR", "").strip()
+    if remote and not urlparse(remote).scheme:
+        return Path(remote) / name
+    return Path("/tmp/rtp-llm") / name
+
+
 def setup_jit_cache(cache_dir=None, packages=None):
     bootstrap_remote_jit_dir()
 
+    requested_cache_dir = cache_dir or Path.home() / ".cache"
+    cache_dir = _ensure_writable_directory(requested_cache_dir)
     if cache_dir is None:
-        cache_dir = Path.home() / ".cache"
-    cache_dir = Path(cache_dir).expanduser().resolve()
+        cache_dir = _ensure_writable_directory(_local_jit_fallback("python_packages"))
+    if cache_dir is None:
+        raise OSError("no writable Python package cache directory")
 
     # DeepGEMM's NVCC compiler changes into the JIT tmp directory before
     # compiling. A relative cache path would then be resolved a second time
     # and make the generated kernel.cu unreachable. Normalize both the default
     # and caller-provided path before launching the actual test process.
-    deep_gemm_cache_dir = Path(
-        os.environ.get("DG_JIT_CACHE_DIR", Path.home() / ".deep_gemm")
+    requested_deep_gemm_cache = os.environ.get(
+        "DG_JIT_CACHE_DIR", Path.home() / ".deep_gemm"
     )
-    os.environ["DG_JIT_CACHE_DIR"] = str(deep_gemm_cache_dir.expanduser().resolve())
+    deep_gemm_cache_dir = _ensure_writable_directory(requested_deep_gemm_cache)
+    if deep_gemm_cache_dir is None:
+        deep_gemm_cache_dir = _ensure_writable_directory(
+            _local_jit_fallback("deep_gemm")
+        )
+    if deep_gemm_cache_dir is None:
+        raise OSError("no writable DeepGEMM cache directory")
+    os.environ["DG_JIT_CACHE_DIR"] = str(deep_gemm_cache_dir)
     logging.info(
         f"[Package Setup] Set DG_JIT_CACHE_DIR: {os.environ['DG_JIT_CACHE_DIR']}"
     )
