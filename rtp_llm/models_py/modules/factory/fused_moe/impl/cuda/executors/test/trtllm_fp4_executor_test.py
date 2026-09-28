@@ -1,5 +1,6 @@
 import unittest
 from dataclasses import dataclass
+from unittest.mock import patch
 
 import torch
 from flashinfer import (
@@ -919,6 +920,53 @@ def _test_moe(
 
 class TrtllmFp4ExecutorTest(unittest.TestCase):
     MAX_GENERATE_BATCH_SIZE = 128
+
+    def test_per_expert_input_scales_use_scalar_activation_scale(self):
+        model_config = ModelConfig()
+        model_config.expert_num = 3
+        model_config.hidden_size = 4
+        model_config.moe_inter_size = 2
+        model_config.moe_k = 1
+        parallelism_config = ParallelismConfig()
+        parallelism_config.dp_size = 1
+        parallelism_config.tp_size = 1
+        parallelism_config.ep_size = 1
+        config = MoEConfigAdapter(
+            model_config=model_config,
+            parallelism_config=parallelism_config,
+            moe_config=MoeConfig(),
+        )
+        w13_input_scale = torch.tensor([0.25, 0.5, 1.0])
+        w13_weight_scale = torch.tensor([2.0, 3.0, 4.0])
+        w2_input_scale = torch.tensor([0.5, 1.0, 2.0])
+        w2_weight_scale = torch.tensor([5.0, 6.0, 7.0])
+        weights = {
+            W.moe_w1: torch.empty(3, 4, 4, dtype=torch.uint8),
+            W.moe_w2: torch.empty(3, 4, 2, dtype=torch.uint8),
+            W.moe_s1: torch.empty(3, 4, 1, dtype=torch.uint8),
+            W.moe_s2: torch.empty(3, 4, 1, dtype=torch.uint8),
+            W.moe_w1_i_s: w13_input_scale,
+            W.moe_w1_s2: w13_weight_scale,
+            W.moe_w2_i_s: w2_input_scale,
+            W.moe_w2_s2: w2_weight_scale,
+        }
+        with patch(
+            "rtp_llm.models_py.modules.factory.fused_moe.impl.cuda.executors.trtllm_fp4_executor.device_support_pdl",
+            return_value=False,
+        ):
+            executor = TrtllmFp4Executor(config, FusedMoeQuantConfig(), weights)
+
+        self.assertEqual(tuple(executor.expert_x_scale.shape), (1,))
+        self.assertEqual(executor.expert_x_scale.dtype, torch.float32)
+        torch.testing.assert_close(executor.expert_x_scale, torch.tensor([1.0]))
+        torch.testing.assert_close(
+            executor.g1_alphas, w13_input_scale * w13_weight_scale
+        )
+        torch.testing.assert_close(executor.g2_alphas, w2_input_scale * w2_weight_scale)
+        torch.testing.assert_close(
+            executor.g1_scale_c,
+            (w13_input_scale * w13_weight_scale) / w2_input_scale,
+        )
 
     def test_executor(self):
         _test_moe(
