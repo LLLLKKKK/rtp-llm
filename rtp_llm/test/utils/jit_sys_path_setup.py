@@ -9,11 +9,13 @@ a specific version of flashinfer different from the system-installed one.
 """
 
 import importlib.metadata
+import json
 import logging
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from contextlib import suppress
 from pathlib import Path
 from urllib.parse import urlparse
@@ -262,41 +264,86 @@ def bootstrap_remote_jit_dir():
         logging.warning(f"[JIT] REMOTE_JIT_DIR refused ({e}); cold start later")
 
 
+_AUTOMATIC_CACHE_ENVS = "_RTP_LLM_AUTOMATIC_JIT_CACHE_ENVS"
+
+
+def _safe_local_path(path):
+    path = Path(path).expanduser()
+    if path.is_symlink() or path.parent.is_symlink():
+        return None
+    path = path.resolve()
+    remote = os.environ.get("REMOTE_JIT_DIR", "").strip()
+    if remote and not urlparse(remote).scheme:
+        remote_path = Path(remote).expanduser().resolve()
+        if path == remote_path or remote_path in path.parents:
+            return None
+    return path
+
+
 def _ensure_writable_directory(path):
-    path = Path(path).expanduser().resolve()
-    probe = path / f".write_probe_{os.getpid()}"
+    path = _safe_local_path(path)
+    if path is None:
+        return None
     try:
         path.mkdir(mode=0o1777, parents=True, exist_ok=True)
-        probe.write_bytes(b"")
-        probe.unlink()
+        with tempfile.NamedTemporaryFile(prefix=".write_probe_", dir=path):
+            pass
     except OSError:
-        with suppress(OSError):
-            probe.unlink()
         return None
     return path
 
 
 def _local_jit_fallback(name):
-    remote = os.environ.get("REMOTE_JIT_DIR", "").strip()
-    if remote and not urlparse(remote).scheme:
-        return Path(remote) / name
     return Path("/tmp/rtp-llm") / name
 
 
-def _configure_writable_cache_env(env_name, fallback_name):
-    requested = os.environ.get(env_name)
-    directory = _ensure_writable_directory(requested) if requested else None
-    if directory is None:
-        directory = _ensure_writable_directory(_local_jit_fallback(fallback_name))
-    if directory is None:
-        raise OSError(f"no writable {fallback_name} cache directory")
+def _record_automatic_cache_env(env_name, directory):
+    try:
+        automatic = json.loads(os.environ.get(_AUTOMATIC_CACHE_ENVS, "{}"))
+    except json.JSONDecodeError:
+        automatic = {}
+    if not isinstance(automatic, dict):
+        automatic = {}
+    automatic[env_name] = str(directory)
+    os.environ[_AUTOMATIC_CACHE_ENVS] = json.dumps(automatic, sort_keys=True)
+
+
+def _configure_writable_cache_env(
+    env_name, default_path, fallback_name, cache_subpath=()
+):
+    def writable_base(path):
+        base = _safe_local_path(path)
+        if base is None:
+            return None
+        cache_dir = base.joinpath(*cache_subpath) if cache_subpath else base
+        return base if _ensure_writable_directory(cache_dir) is not None else None
+
+    requested = os.environ.get(env_name, "").strip()
+    if requested:
+        directory = writable_base(requested)
+        if directory is None:
+            raise OSError(f"{env_name} is not a writable directory: {requested!r}")
+    else:
+        directory = writable_base(default_path)
+        if directory is None:
+            directory = writable_base(_local_jit_fallback(fallback_name))
+        if directory is None:
+            raise OSError(f"no writable {fallback_name} cache directory")
+        _record_automatic_cache_env(env_name, directory)
     os.environ[env_name] = str(directory)
 
 
 def setup_jit_cache(cache_dir=None, packages=None):
     bootstrap_remote_jit_dir()
-    _configure_writable_cache_env("FLASHINFER_WORKSPACE_BASE", "flashinfer")
-    _configure_writable_cache_env("TRITON_CACHE_DIR", "triton")
+    _configure_writable_cache_env(
+        "FLASHINFER_WORKSPACE_BASE",
+        Path.home(),
+        "flashinfer",
+        cache_subpath=(".cache", "flashinfer"),
+    )
+    _configure_writable_cache_env(
+        "TRITON_CACHE_DIR", Path.home() / ".triton" / "cache", "triton"
+    )
 
     requested_cache_dir = cache_dir or Path.home() / ".cache"
     cache_dir = _ensure_writable_directory(requested_cache_dir)
@@ -309,17 +356,9 @@ def setup_jit_cache(cache_dir=None, packages=None):
     # compiling. A relative cache path would then be resolved a second time
     # and make the generated kernel.cu unreachable. Normalize both the default
     # and caller-provided path before launching the actual test process.
-    requested_deep_gemm_cache = os.environ.get(
-        "DG_JIT_CACHE_DIR", Path.home() / ".deep_gemm"
+    _configure_writable_cache_env(
+        "DG_JIT_CACHE_DIR", Path.home() / ".deep_gemm", "deep_gemm"
     )
-    deep_gemm_cache_dir = _ensure_writable_directory(requested_deep_gemm_cache)
-    if deep_gemm_cache_dir is None:
-        deep_gemm_cache_dir = _ensure_writable_directory(
-            _local_jit_fallback("deep_gemm")
-        )
-    if deep_gemm_cache_dir is None:
-        raise OSError("no writable DeepGEMM cache directory")
-    os.environ["DG_JIT_CACHE_DIR"] = str(deep_gemm_cache_dir)
     logging.info(
         f"[Package Setup] Set DG_JIT_CACHE_DIR: {os.environ['DG_JIT_CACHE_DIR']}"
     )
