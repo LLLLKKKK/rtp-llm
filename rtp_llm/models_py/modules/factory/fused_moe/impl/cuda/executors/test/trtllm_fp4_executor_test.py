@@ -326,6 +326,10 @@ class FP4Moe:
 
 
 class FP4MoeExecutor(FP4Moe):
+    def __init__(self, heterogeneous_input_scales=False):
+        super().__init__()
+        self.heterogeneous_input_scales = heterogeneous_input_scales
+
     def prepare_static_weights_for_kernel(self, args):
         _cache_permute_indices = dict()
         args.gemm1_weights_fp4_shuffled, args.gemm1_scales_fp4_shuffled = (
@@ -370,13 +374,22 @@ class FP4MoeExecutor(FP4Moe):
             expert_topk_ids=args.topk_ids,
             expert_topk_weights=args.topk_weights,
         )
+        w13_input_scale = 1.0 / args.hidden_states_scale_global
+        if self.heterogeneous_input_scales:
+            w13_input_scale = w13_input_scale * torch.linspace(
+                0.25,
+                1.0,
+                args.num_experts,
+                device=w13_input_scale.device,
+                dtype=w13_input_scale.dtype,
+            )
         weights = {
             W.moe_w1: args.gemm1_weights_fp4_shuffled,
             W.moe_w2: args.gemm2_weights_fp4_shuffled,
             W.moe_s1: args.gemm1_scales_fp4_shuffled,
             W.moe_s2: args.gemm2_scales_fp4_shuffled,
             W.moe_w1_s2: 1.0 / args.gemm1_scales_global,
-            W.moe_w1_i_s: 1.0 / args.hidden_states_scale_global,
+            W.moe_w1_i_s: w13_input_scale,
             W.moe_w2_s2: 1.0 / args.gemm2_scales_global,
             W.moe_w2_i_s: 1.0 / args.c_global_sf,
         }
@@ -936,7 +949,7 @@ class TrtllmFp4ExecutorTest(unittest.TestCase):
             parallelism_config=parallelism_config,
             moe_config=MoeConfig(),
         )
-        w13_input_scale = torch.tensor([0.25, 0.5, 1.0])
+        w13_input_scale = torch.tensor([0.25, 0.5, 2.0])
         w13_weight_scale = torch.tensor([2.0, 3.0, 4.0])
         w2_input_scale = torch.tensor([0.5, 1.0, 2.0])
         w2_weight_scale = torch.tensor([5.0, 6.0, 7.0])
@@ -956,16 +969,19 @@ class TrtllmFp4ExecutorTest(unittest.TestCase):
         ):
             executor = TrtllmFp4Executor(config, FusedMoEQuantConfig(), weights)
 
+        shared_input_scale = w13_input_scale.max()
         self.assertEqual(tuple(executor.expert_x_scale.shape), (1,))
         self.assertEqual(executor.expert_x_scale.dtype, torch.float32)
-        torch.testing.assert_close(executor.expert_x_scale, torch.tensor([1.0]))
         torch.testing.assert_close(
-            executor.g1_alphas, w13_input_scale * w13_weight_scale
+            executor.expert_x_scale, shared_input_scale.reciprocal().reshape(1)
+        )
+        torch.testing.assert_close(
+            executor.g1_alphas, shared_input_scale * w13_weight_scale
         )
         torch.testing.assert_close(executor.g2_alphas, w2_input_scale * w2_weight_scale)
         torch.testing.assert_close(
             executor.g1_scale_c,
-            (w13_input_scale * w13_weight_scale) / w2_input_scale,
+            (shared_input_scale * w13_weight_scale) / w2_input_scale,
         )
 
     def test_executor(self):
@@ -974,6 +990,25 @@ class TrtllmFp4ExecutorTest(unittest.TestCase):
             hidden_size=1024,
             intermediate_size=768,
             moe_impl=FP4MoeExecutor(),
+            routing_config={
+                "num_experts": 128,
+                "top_k": 8,
+                "padding": 8,
+                "routing_method_type": RoutingMethodType.Renormalize,
+            },
+            weight_processing={
+                "layout": WeightLayout.MajorK,
+            },
+            gated_act_type=ActivationType.Swiglu,
+            ll_num_max_token=self.MAX_GENERATE_BATCH_SIZE,
+        )
+
+    def test_executor_with_heterogeneous_input_scales(self):
+        _test_moe(
+            num_tokens=3072,
+            hidden_size=1024,
+            intermediate_size=768,
+            moe_impl=FP4MoeExecutor(heterogeneous_input_scales=True),
             routing_config={
                 "num_experts": 128,
                 "top_k": 8,
