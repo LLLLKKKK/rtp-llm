@@ -268,8 +268,8 @@ _AUTOMATIC_CACHE_ENVS = "_RTP_LLM_AUTOMATIC_JIT_CACHE_ENVS"
 
 
 def _safe_local_path(path):
-    path = Path(path).expanduser()
-    if path.is_symlink() or path.parent.is_symlink():
+    path = Path(os.path.abspath(Path(path).expanduser()))
+    if any(candidate.is_symlink() for candidate in (path, *path.parents)):
         return None
     path = path.resolve()
     remote = os.environ.get("REMOTE_JIT_DIR", "").strip()
@@ -294,7 +294,7 @@ def _ensure_writable_directory(path):
 
 
 def _local_jit_fallback(name):
-    return Path("/tmp/rtp-llm") / name
+    return Path(tempfile.gettempdir()).resolve() / f"rtp-llm-{os.getuid()}" / name
 
 
 def _record_automatic_cache_env(env_name, directory):

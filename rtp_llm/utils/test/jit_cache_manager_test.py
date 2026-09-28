@@ -117,7 +117,7 @@ class WrapperCacheSetupTest(JitCacheTestBase):
         os.environ["REMOTE_JIT_DIR"] = str(self.root / "remote")
         self.assertEqual(
             wrapper_cache._local_jit_fallback("triton"),
-            Path("/tmp/rtp-llm/triton"),
+            Path(tempfile.gettempdir()).resolve() / f"rtp-llm-{os.getuid()}" / "triton",
         )
 
     def test_automatic_fallback_is_marked_for_the_runtime_manager(self):
@@ -213,6 +213,9 @@ class WrapperCacheSetupTest(JitCacheTestBase):
         link = self.root / "link"
         link.symlink_to(target, target_is_directory=True)
         self.assertIsNone(wrapper_cache._ensure_writable_directory(link))
+        self.assertIsNone(
+            wrapper_cache._ensure_writable_directory(link / "nested" / "cache")
+        )
 
 
 class StoreTest(JitCacheTestBase):
