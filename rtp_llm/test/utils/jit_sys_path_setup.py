@@ -264,11 +264,16 @@ def bootstrap_remote_jit_dir():
 
 def _ensure_writable_directory(path):
     path = Path(path).expanduser().resolve()
+    probe = path / f".write_probe_{os.getpid()}"
     try:
         path.mkdir(mode=0o1777, parents=True, exist_ok=True)
+        probe.write_bytes(b"")
+        probe.unlink()
     except OSError:
+        with suppress(OSError):
+            probe.unlink()
         return None
-    return path if os.access(path, os.R_OK | os.W_OK | os.X_OK) else None
+    return path
 
 
 def _local_jit_fallback(name):
@@ -278,8 +283,19 @@ def _local_jit_fallback(name):
     return Path("/tmp/rtp-llm") / name
 
 
+def _configure_writable_cache_env(env_name, fallback_name):
+    requested = os.environ.get(env_name)
+    directory = _ensure_writable_directory(requested) if requested else None
+    if directory is None:
+        directory = _ensure_writable_directory(_local_jit_fallback(fallback_name))
+    if directory is None:
+        raise OSError(f"no writable {fallback_name} cache directory")
+    os.environ[env_name] = str(directory)
+
+
 def setup_jit_cache(cache_dir=None, packages=None):
     bootstrap_remote_jit_dir()
+    _configure_writable_cache_env("FLASHINFER_WORKSPACE_BASE", "flashinfer")
 
     requested_cache_dir = cache_dir or Path.home() / ".cache"
     cache_dir = _ensure_writable_directory(requested_cache_dir)
