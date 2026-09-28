@@ -296,6 +296,7 @@ def _configure_writable_cache_env(env_name, fallback_name):
 def setup_jit_cache(cache_dir=None, packages=None):
     bootstrap_remote_jit_dir()
     _configure_writable_cache_env("FLASHINFER_WORKSPACE_BASE", "flashinfer")
+    _configure_writable_cache_env("TRITON_CACHE_DIR", "triton")
 
     requested_cache_dir = cache_dir or Path.home() / ".cache"
     cache_dir = _ensure_writable_directory(requested_cache_dir)
