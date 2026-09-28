@@ -954,7 +954,7 @@ class TrtllmFp4ExecutorTest(unittest.TestCase):
             "rtp_llm.models_py.modules.factory.fused_moe.impl.cuda.executors.trtllm_fp4_executor.device_support_pdl",
             return_value=False,
         ):
-            executor = TrtllmFp4Executor(config, FusedMoeQuantConfig(), weights)
+            executor = TrtllmFp4Executor(config, FusedMoEQuantConfig(), weights)
 
         self.assertEqual(tuple(executor.expert_x_scale.shape), (1,))
         self.assertEqual(executor.expert_x_scale.dtype, torch.float32)
