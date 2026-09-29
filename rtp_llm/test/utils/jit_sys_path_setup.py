@@ -269,9 +269,12 @@ _AUTOMATIC_CACHE_ENVS = "_RTP_LLM_AUTOMATIC_JIT_CACHE_ENVS"
 
 def _safe_local_path(path):
     path = Path(os.path.abspath(Path(path).expanduser()))
-    if any(candidate.is_symlink() for candidate in (path, *path.parents)):
+    try:
+        if any(candidate.is_symlink() for candidate in (path, *path.parents)):
+            return None
+        path = path.resolve()
+    except OSError:
         return None
-    path = path.resolve()
     remote = os.environ.get("REMOTE_JIT_DIR", "").strip()
     if remote and not urlparse(remote).scheme:
         remote_path = Path(remote).expanduser().resolve()

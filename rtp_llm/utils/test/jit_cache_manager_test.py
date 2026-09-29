@@ -217,6 +217,10 @@ class WrapperCacheSetupTest(JitCacheTestBase):
             wrapper_cache._ensure_writable_directory(link / "nested" / "cache")
         )
 
+    def test_inaccessible_cache_path_is_rejected(self):
+        with mock.patch.object(Path, "is_symlink", side_effect=PermissionError):
+            self.assertIsNone(wrapper_cache._safe_local_path(self.root / "cache"))
+
 
 class StoreTest(JitCacheTestBase):
     def test_publish_keeps_immutable_generations(self):
