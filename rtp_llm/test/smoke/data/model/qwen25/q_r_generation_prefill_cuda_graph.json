@@ -108,16 +108,10 @@
             "result": {
                 "response_batch": [
                     {
-                        "response": " Flask is a lightweight web framework for Python,",
-                        "aux_info": {
-                            "generation_prefill_cuda_graph_status": "replayed"
-                        }
+                        "response": " Flask is a lightweight web framework for Python,"
                     },
                     {
-                        "response": "\n\nI am trying to use the screen manager",
-                        "aux_info": {
-                            "generation_prefill_cuda_graph_status": "replayed"
-                        }
+                        "response": "\n\nI am trying to use the screen manager"
                     }
                 ]
             }
