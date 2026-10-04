@@ -6,7 +6,6 @@ requirement([
     "protobuf",
 ])
 
-
 filegroup(
     name = "testdata",
     srcs = glob([
@@ -41,6 +40,7 @@ py_test(
         "//rtp_llm:sdk",
         "//rtp_llm:torch",
         "//rtp_llm/model_loader/tipc",
+        "//rtp_llm/test/utils:jit_sys_path_setup",
     ],
 )
 
@@ -58,7 +58,7 @@ custom_smoke_test(
     main = "jit_cache_smoke_test.py",
     smoke_args = "--warm_up 0 --hack_layer_num 2 --load_method scratch --test_block_num 100 --act_type BF16 --quantization FP8_PER_BLOCK --seq_size_per_block 64 --tp_size 2 --reuse_cache 1",
     args = ["JitCacheSmokeTest.test_deepseek_v2_lite"],
-    gpu_type = ["H20"],
+    gpu_type = ["H20_CU13"],
     tags = ["multi_device"],
     data = [
         "//:rtp_compute_ops",
@@ -94,14 +94,14 @@ py_test(
         "ckpt_database_test.py",
     ],
     deps = [
-        "//rtp_llm:utils",
-        "//rtp_llm:config",
         "//rtp_llm:_ft_pickler",
-        "//rtp_llm:lora"
+        "//rtp_llm:config",
+        "//rtp_llm:lora",
+        "//rtp_llm:utils",
     ],
     data = [
         "//rtp_llm/utils/test:testdata",
-    ]
+    ],
 )
 
 py_test(
@@ -110,7 +110,12 @@ py_test(
     srcs = ["ckpt_database_test.py"],
     main = "ckpt_database_test.py",
     args = ["HandleRecyclingTest"],
-    deps = ["//rtp_llm:utils", "//rtp_llm:config", "//rtp_llm:_ft_pickler", "//rtp_llm:lora"],
+    deps = [
+        "//rtp_llm:_ft_pickler",
+        "//rtp_llm:config",
+        "//rtp_llm:lora",
+        "//rtp_llm:utils",
+    ],
     data = ["//rtp_llm/utils/test:testdata"],
     env = {"RTP_LLM_REQUIRE_ACCELERATOR": "1"},
     tags = ["rocm"],
@@ -127,18 +132,17 @@ py_test(
     ],
 )
 
-
 py_test(
     name = "util_test",
     srcs = [
         "util_test.py",
     ],
     deps = [
-        "//rtp_llm:utils",
         "//rtp_llm:_ft_pickler",
-        "//rtp_llm:pynvml",
-        "//rtp_llm:psutil",
         "//rtp_llm:fastapi",
+        "//rtp_llm:psutil",
+        "//rtp_llm:pynvml",
+        "//rtp_llm:utils",
     ],
 )
 
@@ -168,11 +172,12 @@ py_test(
         "//rtp_llm:utils",
     ],
     data = [
+        "//:rtp_compute_ops",
         "//:th_transformer",
         "//:th_transformer_config",
-        "//:rtp_compute_ops",
     ],
-    exec_properties = {'gpu':'A10'},
+    exec_properties = {"gpu": "A10_CU13"},
+    tags = ["A10_CU13"],
 )
 
 py_test(
@@ -181,15 +186,16 @@ py_test(
         "grpc_host_channel_pool_test.py",
     ],
     deps = [
-        "//rtp_llm:utils",
         ":grpcio",
+        "//rtp_llm:utils",
     ],
     data = [
+        "//:rtp_compute_ops",
         "//:th_transformer",
         "//:th_transformer_config",
-        "//:rtp_compute_ops",
     ],
-    exec_properties = {'gpu':'A10'},
+    exec_properties = {"gpu": "A10_CU13"},
+    tags = ["A10_CU13"],
 )
 
 py_test(
@@ -213,11 +219,12 @@ py_test(
         "//rtp_llm:utils",
     ],
     data = [
+        "//:rtp_compute_ops",
         "//:th_transformer",
         "//:th_transformer_config",
-        "//:rtp_compute_ops",
     ],
-    exec_properties = {'gpu':'A10'}
+    exec_properties = {"gpu": "A10_CU13"},
+    tags = ["A10_CU13"],
 )
 
 py_test(
@@ -226,16 +233,17 @@ py_test(
         "duplicated_kv_test.py",
     ],
     deps = [
-        "//rtp_llm:utils",
-        "//rtp_llm:fastapi",
         "//rtp_llm:_ft_pickler",
+        "//rtp_llm:fastapi",
+        "//rtp_llm:utils",
     ],
     data = [
+        "//:rtp_compute_ops",
         "//:th_transformer",
         "//:th_transformer_config",
-        "//:rtp_compute_ops",
     ],
-    exec_properties = {'gpu':'A10'}
+    exec_properties = {"gpu": "A10_CU13"},
+    tags = ["A10_CU13"],
 )
 
 py_test(

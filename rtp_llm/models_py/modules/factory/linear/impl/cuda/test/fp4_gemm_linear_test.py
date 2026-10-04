@@ -30,6 +30,7 @@ class CudaFp4GEMMLinearTest(unittest.TestCase):
         self.hidden_size = 1024  # k
         self.output_size = 512  # n
         self.batch_sizes = [1, 32, 64, 128, 256] # m
+        torch.manual_seed(42)
         weight_fp16 = (
             torch.randn(
                 self.output_size,
