@@ -617,6 +617,70 @@ class ScopeTest(JitCacheTestBase):
             self.assertEqual(os.environ[item.env_name], str(item.local_dir))
         self.assertNotIn(jit._AUTOMATIC_CACHE_ENVS, os.environ)
 
+    def test_wrapper_runtime_handoff_uses_real_cache_configuration(self):
+        for scenario in ("automatic", "explicit", "disabled", "rocm"):
+            with self.subTest(scenario=scenario), mock.patch.dict(os.environ):
+                for name in (
+                    "FLASHINFER_WORKSPACE_BASE",
+                    "DG_JIT_CACHE_DIR",
+                    "TRITON_CACHE_DIR",
+                    jit._AUTOMATIC_CACHE_ENVS,
+                ):
+                    os.environ.pop(name, None)
+                jit.setup_jit_cache_env.cache_clear()
+                explicit = str(self.root / "explicit")
+                if scenario == "explicit":
+                    os.environ["TRITON_CACHE_DIR"] = explicit
+                with _fake_probes(
+                    hip="6.2.41133" if scenario == "rocm" else None
+                ), mock.patch.object(
+                    wrapper_cache.Path, "home", return_value=self.root / "home"
+                ):
+                    wrapper_cache.setup_jit_cache(packages=[])
+                    before = {
+                        name: os.environ[name]
+                        for name in (
+                            "FLASHINFER_WORKSPACE_BASE",
+                            "DG_JIT_CACHE_DIR",
+                            "TRITON_CACHE_DIR",
+                        )
+                    }
+                    if scenario == "disabled":
+                        jit.start_from_config(
+                            types.SimpleNamespace(manage_jit_cache=False)
+                        )
+                        self.assertEqual(
+                            before, {name: os.environ[name] for name in before}
+                        )
+                        self.assertEqual(
+                            json.loads(os.environ[jit._AUTOMATIC_CACHE_ENVS]), before
+                        )
+                        continue
+                    scope = jit.setup_jit_cache_env()
+                self.assertIsNotNone(scope)
+                components = {item.env_name: item for item in scope.components}
+                for name in before:
+                    if name == "TRITON_CACHE_DIR" and scenario == "explicit":
+                        self.assertNotIn(name, components)
+                        self.assertEqual(os.environ[name], explicit)
+                    elif scenario == "rocm" and name != "TRITON_CACHE_DIR":
+                        self.assertNotIn(name, components)
+                        self.assertEqual(os.environ[name], before[name])
+                    else:
+                        self.assertEqual(
+                            os.environ[name], str(components[name].local_dir)
+                        )
+                remaining = json.loads(os.environ.get(jit._AUTOMATIC_CACHE_ENVS, "{}"))
+                expected = (
+                    {
+                        name: before[name]
+                        for name in ("FLASHINFER_WORKSPACE_BASE", "DG_JIT_CACHE_DIR")
+                    }
+                    if scenario == "rocm"
+                    else {}
+                )
+                self.assertEqual(remaining, expected)
+
     def test_presetting_every_component_disables_all_redirection(self):
         off = self.root / "off"  # the documented rollback: no root, no ACL, no env
         os.environ["TEST_JIT_LOCAL_DIR"] = str(off)
