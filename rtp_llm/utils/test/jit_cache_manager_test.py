@@ -1,6 +1,8 @@
 import contextlib
+import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -15,6 +17,7 @@ from unittest import mock
 
 from rtp_llm import start_backend_server as backend
 from rtp_llm.model_loader.tipc import ffi as tipc_ffi
+from rtp_llm.test.utils import jit_sys_path_setup as wrapper_cache
 from rtp_llm.utils import jit_cache_manager as jit
 from rtp_llm.utils import jit_cache_store as store
 from rtp_llm.utils.util import COMPILE_FLAG_ENVS, torch_abi_fingerprint
@@ -89,6 +92,8 @@ class JitCacheTestBase(unittest.TestCase):
         os.environ["TEST_JIT_LOCAL_DIR"] = str(self.root)
         for name in (*(item.env_name for item in jit.COMPONENTS), *COMPILE_FLAG_ENVS):
             os.environ.pop(name, None)
+        os.environ.pop("REMOTE_JIT_DIR", None)
+        os.environ.pop(jit._AUTOMATIC_CACHE_ENVS, None)
         jit.setup_jit_cache_env.cache_clear()  # memoized: every test starts cold
         self.addCleanup(jit.setup_jit_cache_env.cache_clear)
         self._seq = 0
@@ -106,6 +111,141 @@ class JitCacheTestBase(unittest.TestCase):
             source.write_bytes(data)
             generation[rel] = source
         return snap_store.publish_snapshot(generation)
+
+
+class WrapperCacheSetupTest(JitCacheTestBase):
+    def test_local_fallback_does_not_use_remote_snapshot_root(self):
+        os.environ["REMOTE_JIT_DIR"] = str(self.root / "remote")
+        self.assertEqual(
+            wrapper_cache._local_jit_fallback("triton"),
+            Path(tempfile.gettempdir()).resolve() / f"rtp-llm-{os.getuid()}" / "triton",
+        )
+
+    def test_automatic_fallback_is_marked_for_the_runtime_manager(self):
+        default = self.root / "unwritable"
+        fallback = self.root / "fallback"
+
+        def writable(path):
+            path = Path(path)
+            return fallback if path == fallback else None
+
+        with mock.patch.object(
+            wrapper_cache, "_local_jit_fallback", return_value=fallback
+        ), mock.patch.object(
+            wrapper_cache, "_ensure_writable_directory", side_effect=writable
+        ):
+            wrapper_cache._configure_writable_cache_env(
+                "TRITON_CACHE_DIR", default, "triton"
+            )
+
+        self.assertEqual(os.environ["TRITON_CACHE_DIR"], str(fallback))
+        self.assertEqual(
+            json.loads(os.environ[wrapper_cache._AUTOMATIC_CACHE_ENVS]),
+            {"TRITON_CACHE_DIR": str(fallback)},
+        )
+
+    def test_blank_cache_env_uses_automatic_fallback(self):
+        default = self.root / "default"
+        fallback = self.root / "fallback"
+        os.environ["TRITON_CACHE_DIR"] = ""
+
+        def writable(path):
+            path = Path(path)
+            return fallback if path == fallback else None
+
+        with mock.patch.object(
+            wrapper_cache, "_local_jit_fallback", return_value=fallback
+        ), mock.patch.object(
+            wrapper_cache, "_ensure_writable_directory", side_effect=writable
+        ):
+            wrapper_cache._configure_writable_cache_env(
+                "TRITON_CACHE_DIR", default, "triton"
+            )
+        self.assertEqual(os.environ["TRITON_CACHE_DIR"], str(fallback))
+        self.assertEqual(
+            json.loads(os.environ[wrapper_cache._AUTOMATIC_CACHE_ENVS]),
+            {"TRITON_CACHE_DIR": str(fallback)},
+        )
+
+    def test_flashinfer_checks_only_the_derived_cache_directory(self):
+        base = self.root / "flashinfer-base"
+        cache = base / ".cache" / "flashinfer"
+        with mock.patch.object(
+            wrapper_cache, "_ensure_writable_directory", return_value=cache
+        ) as ensure:
+            wrapper_cache._configure_writable_cache_env(
+                "FLASHINFER_WORKSPACE_BASE",
+                base,
+                "flashinfer",
+                cache_subpath=(".cache", "flashinfer"),
+            )
+        ensure.assert_called_once_with(cache)
+        self.assertEqual(os.environ["FLASHINFER_WORKSPACE_BASE"], str(base.resolve()))
+
+    def test_explicit_writable_cache_is_preserved(self):
+        explicit = self.root / "explicit"
+        os.environ["TRITON_CACHE_DIR"] = str(explicit)
+        wrapper_cache._configure_writable_cache_env(
+            "TRITON_CACHE_DIR", self.root / "default", "triton"
+        )
+        self.assertEqual(os.environ["TRITON_CACHE_DIR"], str(explicit.resolve()))
+        self.assertNotIn(wrapper_cache._AUTOMATIC_CACHE_ENVS, os.environ)
+
+    def test_explicit_unwritable_cache_passes_through(self):
+        # Explicit values are no longer rejected: they keep the historical
+        # pass-through semantics and are only normalized.
+        explicit = self.root / "unwritable"
+        os.environ["TRITON_CACHE_DIR"] = str(explicit)
+        wrapper_cache._configure_writable_cache_env(
+            "TRITON_CACHE_DIR", self.root / "default", "triton"
+        )
+        self.assertEqual(os.environ["TRITON_CACHE_DIR"], str(explicit.resolve()))
+        self.assertNotIn(wrapper_cache._AUTOMATIC_CACHE_ENVS, os.environ)
+
+    def test_explicit_shared_cache_keeps_its_mode(self):
+        # A team-shared cache (group-writable) must not be chmod-ed away.
+        shared = self.root / "shared"
+        shared.mkdir()
+        os.chmod(shared, 0o775)
+        os.environ["TRITON_CACHE_DIR"] = str(shared)
+        wrapper_cache._configure_writable_cache_env(
+            "TRITON_CACHE_DIR", self.root / "default", "triton"
+        )
+        self.assertEqual(os.environ["TRITON_CACHE_DIR"], str(shared.resolve()))
+        self.assertEqual(stat.S_IMODE(shared.stat().st_mode), 0o775)
+
+    def test_automatic_existing_directory_keeps_its_mode(self):
+        # Hardening applies to directories we create; pre-existing ones are
+        # only checked for ownership and writability.
+        default = self.root / "default"
+        default.mkdir()
+        os.chmod(default, 0o775)
+        self.assertEqual(
+            wrapper_cache._ensure_writable_directory(default), default.resolve()
+        )
+        self.assertEqual(stat.S_IMODE(default.stat().st_mode), 0o775)
+
+    def test_remote_snapshot_subdirectory_is_rejected(self):
+        remote = self.root / "remote"
+        remote.mkdir()
+        os.environ["REMOTE_JIT_DIR"] = str(remote)
+        self.assertIsNone(
+            wrapper_cache._ensure_writable_directory(remote / "live-triton")
+        )
+
+    def test_symlink_cache_path_is_rejected(self):
+        target = self.root / "target"
+        target.mkdir()
+        link = self.root / "link"
+        link.symlink_to(target, target_is_directory=True)
+        self.assertIsNone(wrapper_cache._ensure_writable_directory(link))
+        self.assertIsNone(
+            wrapper_cache._ensure_writable_directory(link / "nested" / "cache")
+        )
+
+    def test_inaccessible_cache_path_is_rejected(self):
+        with mock.patch.object(Path, "is_symlink", side_effect=PermissionError):
+            self.assertIsNone(wrapper_cache._safe_local_path(self.root / "cache"))
 
 
 class StoreTest(JitCacheTestBase):
@@ -451,6 +591,31 @@ class ScopeTest(JitCacheTestBase):
         torch_ext = next(x for x in scope.components if x.name == "torch_extensions")
         self.assertEqual(os.environ["TORCH_EXTENSIONS_DIR"], str(torch_ext.local_dir))
         self.assertIn(scope.scope_id, os.environ["TORCH_EXTENSIONS_DIR"])
+
+    def test_setup_env_manages_blank_component_variable(self):
+        os.environ["TRITON_CACHE_DIR"] = ""
+        with _fake_probes():
+            scope = jit.setup_jit_cache_env()
+        triton = next(item for item in scope.components if item.name == "triton")
+        self.assertEqual(os.environ["TRITON_CACHE_DIR"], str(triton.local_dir))
+
+    def test_setup_env_replaces_automatic_wrapper_fallbacks(self):
+        automatic = {
+            "FLASHINFER_WORKSPACE_BASE": str(self.root / "flashinfer"),
+            "DG_JIT_CACHE_DIR": str(self.root / "deep_gemm"),
+            "TRITON_CACHE_DIR": str(self.root / "triton"),
+        }
+        os.environ.update(automatic)
+        os.environ[jit._AUTOMATIC_CACHE_ENVS] = json.dumps(automatic)
+
+        with _fake_probes():
+            scope = jit.setup_jit_cache_env()
+
+        components = {item.name: item for item in scope.components}
+        for name in ("flashinfer", "deep_gemm", "triton"):
+            item = components[name]
+            self.assertEqual(os.environ[item.env_name], str(item.local_dir))
+        self.assertNotIn(jit._AUTOMATIC_CACHE_ENVS, os.environ)
 
     def test_presetting_every_component_disables_all_redirection(self):
         off = self.root / "off"  # the documented rollback: no root, no ACL, no env
