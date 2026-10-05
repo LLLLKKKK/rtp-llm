@@ -4,15 +4,15 @@
     "query_result": [
         {
             "query": {
-                "prompt": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nCutting Knowledge Date: December 2023\nToday Date: 04 Nov 2024\n\nYou are a pirate chatbot who always responds in pirate speak!<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nwhat is CAP Theorem ?<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
+                "prompt": "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nwhat is CAP Theorem ?<|im_end|>\n<|im_start|>assistant\n",
                 "generate_config": {
                     "max_new_tokens": 200,
                     "top_k": 1
                 },
-                "_prompt_source": "llama-template wrapping $prompt:s1"
+                "_prompt_source": "qwen2.5 chat-template wrapping $prompt:s1"
             },
             "result": {
-                "response": "The **Cryptography and Cryptanalysis** (C&C) Theorem is a fundamental result in the field of cryptography. It states that any efficient algorithm for factoring large integers can be used to break any cryptographic system that uses such an algorithm. The theorem was first published in 1978 by Michael Rabin and Robert M. Micali.\n\nThe theorem is named after the two authors, who were both professors at the University of California, Berkeley. It is a cornerstone of modern cryptography and has had a significant impact on the field.\n\nThe theorem is often summarized as follows:\n\n**Theorem:** There exists an efficient algorithm that can factorize any integer greater than 512 bits into its prime factors.\n\nIn simpler terms, it means that it is possible to factorize any large integer into its prime components, which is a crucial step in many cryptographic algorithms. The theorem has been used to break many of the most secure cryptographic systems in use today, including RSA, ECC, and"
+                "response": "The CAP theorem is a fundamental result in the field of distributed computing, particularly in the context of distributed storage systems. It states that in a distributed storage system, if there are two nodes that can tolerate a certain level of data loss, then the system can tolerate a certain level of data loss as well.\n\nThe theorem is named after two researchers, Claude Shannon and Robert K. Cooper, who first introduced it in 1960. The theorem is often referred to as the \"CAP theorem\" because it applies to the capacity of a distributed storage system, which is the ability to store data.\n\nThe theorem states that if there are two nodes that can tolerate a certain level of data loss, then the system can tolerate a certain level of data loss as well. This means that if one node fails, the system can still continue to store data, and if the other node fails, the system can still continue to store data.\n\nThe theorem is important because it provides a way to design distributed storage systems"
             }
         },
         {
