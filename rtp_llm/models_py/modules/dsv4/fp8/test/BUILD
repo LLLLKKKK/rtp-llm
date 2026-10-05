@@ -72,12 +72,15 @@ _CONTRACT_TESTS = [
 [
     dsv4_py_test(
         name = name,
-        deps = _DSV4_FP8_TEST_DEPS,
-        gpu_count = 2 if name == "test_topk_v3" else 1,
-        tags = ["multi_device"] if name == "test_topk_v3" else [],
         # Do not let the local integer-arithmetic assertion hide a skipped
         # large-stride CUDA regression when the worker lacks memory.
-        args = ["-k", "SwaDequantLargeStrideTest"] if name == "test_swa_dequant_large_stride" else [],
+        args = [
+            "-k",
+            "SwaDequantLargeStrideTest",
+        ] if name == "test_swa_dequant_large_stride" else [],
+        gpu_count = 2 if name == "test_topk_v3" else 1,
+        tags = ["multi_device"] if name == "test_topk_v3" else [],
+        deps = _DSV4_FP8_TEST_DEPS,
     )
     for name in _GPU_TESTS + _CONTRACT_TESTS
 ]
@@ -94,17 +97,26 @@ dsv4_py_test(
 [
     dsv4_py_test(
         name = name,
+        tags = [
+            "external_fixture",
+            "manual",
+        ],
         deps = _DSV4_FP8_TEST_DEPS,
-        tags = ["manual", "external_fixture"],
     )
-    for name in ["test_dsv4_kv_cache", "test_varlen_prefill_oracle"]
+    for name in [
+        "test_dsv4_kv_cache",
+        "test_varlen_prefill_oracle",
+    ]
 ]
 
 # Compares locally constructed F.linear/cat expressions, not CompressorFP8.
 dsv4_py_test(
     name = "test_compressor_gemm_merge",
     deps = _DSV4_FP8_TEST_DEPS,
-    tags = ["manual", "legacy_fixture"],
+    tags = [
+        "legacy_fixture",
+        "manual",
+    ],
 )
 
 # Preserve the combined correctness/benchmark script for explicit measurements.
@@ -114,7 +126,10 @@ py_test(
     srcs = ["test_fused_decode_meta_comprehensive.py"],
     main = "test_fused_decode_meta_comprehensive.py",
     deps = _DSV4_FP8_TEST_DEPS,
-    tags = ["manual", "perf"],
+    tags = [
+        "manual",
+        "perf",
+    ],
     exec_properties = cuda13_test_exec_properties(),
     target_compatible_with = DSV4_CUDA13_ONLY,
 )
@@ -125,15 +140,21 @@ py_test(
     py_test(
         name = name + "_perf",
         srcs = [name + ".py"],
-        main = name + ".py",
-        deps = _DSV4_FP8_TEST_DEPS,
-        tags = ["manual", "perf"] + (["multi_device"] if gpu_count == 2 else []),
         env = {"GPU_COUNT": str(gpu_count)},
         exec_properties = cuda13_test_exec_properties(gpu_count),
-        target_compatible_with = DSV4_CUDA13_ONLY,
         legacy_create_init = 0,
+        main = name + ".py",
+        tags = [
+            "manual",
+            "perf",
+        ] + (["multi_device"] if gpu_count == 2 else []),
+        target_compatible_with = DSV4_CUDA13_ONLY,
+        deps = _DSV4_FP8_TEST_DEPS,
     )
-    for name, gpu_count in [("test_topk_v3", 2), ("test_dsv4_persistent_topk", 1)]
+    for name, gpu_count in [
+        ("test_topk_v3", 2),
+        ("test_dsv4_persistent_topk", 1),
+    ]
 ]
 
 test_suite(
@@ -148,15 +169,15 @@ test_suite(
 test_suite(
     name = "dsv4_fp8_cuda13_cross_arch",
     tests = [
-        ":test_indexer_cp_padded_gather_distributed",
-        ":test_indexer_cp_padded_gather_triton",
-        ":test_prefill_common_metadata_cuda",
-        ":test_fused_compressor_meta_triton",
-        ":test_swa_cp_packed_gather_triton",
-        ":test_swa_fp8_kv_roundtrip",
-        ":test_indexer_fp8_score",
-        ":test_flash_mla_decode_kernel_layout",
-        ":test_no_recompile",
-        ":test_fused_decode_meta_comprehensive",
+        ":test_flash_mla_decode_kernel_layout_x86",
+        ":test_fused_compressor_meta_triton_x86",
+        ":test_fused_decode_meta_comprehensive_x86",
+        ":test_indexer_cp_padded_gather_distributed_x86",
+        ":test_indexer_cp_padded_gather_triton_x86",
+        ":test_indexer_fp8_score_x86",
+        ":test_no_recompile_x86",
+        ":test_prefill_common_metadata_cuda_x86",
+        ":test_swa_cp_packed_gather_triton_x86",
+        ":test_swa_fp8_kv_roundtrip_x86",
     ],
 )
