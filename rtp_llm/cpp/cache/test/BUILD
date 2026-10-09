@@ -394,6 +394,19 @@ cc_test(
 )
 
 cc_test(
+    name = "kv_cache_spec_geometry_override_test",
+    srcs = [
+        "KVCacheSpecGeometryOverrideTest.cc",
+    ],
+    data = [],
+    copts = test_copts,
+    deps = test_deps,
+    env = {},
+    exec_properties = {'gpu':'A10_CU13'},
+    tags = ['A10_CU13'],
+)
+
+cc_test(
     name = "kv_cache_resource_test",
     srcs = [
         "KVCacheResourceTest.cc",
@@ -446,17 +459,3 @@ cc_test(
     exec_properties = {"gpu": "A10_CU13"},
     tags = ["A10_CU13"],
 )
-
-cc_test(
-    name = "kv_cache_spec_geometry_override_test",
-    srcs = [
-        "KVCacheSpecGeometryOverrideTest.cc",
-    ],
-    data = [],
-    copts = test_copts,
-    deps = test_deps,
-    env = {},
-    exec_properties = {'gpu':'A10_CU13'},
-    tags = ['A10_CU13'],
-)
-

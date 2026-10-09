@@ -32,3 +32,37 @@ py_test(
     deps = ["//rtp_llm:testlib"],
     target_compatible_with = _DSV4_CUDA13_ONLY,
 )
+
+py_test(
+    name = "gemma4_weight_info_test",
+    srcs = ["gemma4_weight_info_test.py"],
+    deps = [
+        "//rtp_llm:testlib",
+        "//rtp_llm:models",
+        "//rtp_llm/models_py:models",
+        "//rtp_llm/model_loader:loader",
+    ],
+    exec_properties = {"gpu": "A10_CU13", "gpu_count": "1"},
+    tags = ["A10_CU13"],
+)
+
+py_test(
+    name = "gemma4_assistant_weight_info_test",
+    srcs = ["gemma4_assistant_weight_info_test.py"],
+    deps = [
+        "//rtp_llm:testlib",
+        "//rtp_llm:models",
+        "//rtp_llm/model_loader:loader",
+    ],
+    env = {"PYTHONNOUSERSITE": "1"},
+    exec_properties = {"gpu": "A10_CU13", "gpu_count": "1"},
+    tags = ["A10_CU13"],
+)
+
+py_test(
+    name = "gemma4_config_test",
+    srcs = ["gemma4_config_test.py"],
+    deps = ["//rtp_llm:testlib", "//rtp_llm:models", "//rtp_llm/model_loader:loader"],
+    exec_properties = {"gpu": "A10_CU13"},
+    tags = ["A10_CU13"],
+)
