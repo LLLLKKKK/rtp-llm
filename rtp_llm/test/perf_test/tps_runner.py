@@ -1,4 +1,5 @@
 import logging
+import math
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from rtp_llm.test.perf_test.batch_perf_impl import BatchPerfImpl
@@ -31,6 +32,7 @@ class TpsBinarySearchRunner:
         self._generate_config = generate_config or {}
         self._dump_json_path = dump_json_path
         self._num_measures = num_measures
+        self._counted_by_bs: Dict[int, Any] = {}
 
     def warmup(self, query: str) -> None:
         logging.info(f"TPS warmup: port={self._port}, dp_size={self._dp_size}")
@@ -67,7 +69,13 @@ class TpsBinarySearchRunner:
             if metric.total_requests > 0
             else 0
         )
-        ok = sr == 1.0 and metric.avg_decode_time <= self._target_tpot
+        self._counted_by_bs[bs] = metric.counted_throughput
+        ok = (
+            sr == 1.0
+            and bool(metric.counted_throughput and metric.counted_throughput["valid"])
+            and math.isfinite(metric.avg_decode_time)
+            and 0 < metric.avg_decode_time <= self._target_tpot
+        )
         return ok, metric.avg_decode_time, sr
 
     @staticmethod
@@ -98,7 +106,7 @@ class TpsBinarySearchRunner:
             bs = candidates[mid_idx]
             queries = queries_fn(bs)
             ok, tpot, sr = self._test_bs(bs, queries, label)
-            steps.append(TpsSearchStep(bs, tpot, sr, ok))
+            steps.append(TpsSearchStep(bs, tpot, sr, ok, self._counted_by_bs.get(bs)))
             status = "PASS" if ok else "FAIL"
             logging.debug(
                 f"  [{label}] BS={bs}: TPOT={tpot:.2f}ms, "
@@ -120,6 +128,7 @@ class TpsBinarySearchRunner:
             actual_tpot=best_tpot,
             tps=tps,
             search_steps=steps,
+            counted_throughput=self._counted_by_bs.get(best_bs),
         )
 
     def run_grid(
