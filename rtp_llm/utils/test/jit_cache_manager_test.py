@@ -349,6 +349,48 @@ class StoreTest(JitCacheTestBase):
             marker.stat().st_mtime_ns,
         )
 
+    def test_triton_binary_less_groups_are_repaired(self):
+        triton_dir = self.root / "triton"
+        # The restored shape of a snapshot published before .hgbin joined the
+        # triton sync rules on PPU: metadata and launcher only, no kernel
+        # binary, yet complete enough for triton to count it as a cache hit.
+        poisoned = triton_dir / "hashA"
+        for rel, payload in {
+            "__grp__k.json": b"{}",
+            "k.json": b"{}",
+            "k.llir": b"ir",
+            "__triton_launcher.cpython-312-x86_64-linux-gnu.so": b"launcher",
+        }.items():
+            (poisoned / rel).parent.mkdir(parents=True, exist_ok=True)
+            (poisoned / rel).write_bytes(payload)
+        complete_ppu = triton_dir / "hashB"
+        complete_ppu.mkdir(parents=True)
+        (complete_ppu / "k.hgbin").write_bytes(b"binary")
+        (complete_ppu / "k.json").write_bytes(b"{}")
+        (complete_ppu / "__grp__k.json").write_bytes(b"{}")
+        (complete_ppu / "k.cubin").symlink_to("k.hgbin")
+        complete_cuda = triton_dir / "hashC"
+        complete_cuda.mkdir(parents=True)
+        (complete_cuda / "k.cubin").write_bytes(b"binary")
+        (complete_cuda / "__grp__k.json").write_bytes(b"{}")
+        incomplete = triton_dir / "hashD"  # mid-compile: no group marker yet
+        incomplete.mkdir(parents=True)
+        (incomplete / "k.ttir").write_bytes(b"ir")
+        dangling = triton_dir / "hashE"
+        dangling.mkdir(parents=True)
+        (dangling / "k.json").write_bytes(b"{}")
+        (dangling / "__grp__k.json").write_bytes(b"{}")
+        (dangling / "k.cubin").symlink_to("missing.hgbin")
+
+        with self.assertLogs(level="WARNING") as logs:
+            jit._repair_triton_cache(triton_dir)
+
+        self.assertFalse(poisoned.exists())
+        self.assertFalse(dangling.exists())
+        self.assertIn("JIT_CACHE_REPAIR", "\n".join(logs.output))
+        for kept in (complete_ppu, complete_cuda, incomplete):
+            self.assertTrue(kept.is_dir())
+
     def test_deep_gemm_read_events_never_reenter_the_watcher(self):
         component = replace(
             next(item for item in jit.COMPONENTS if item.name == "deep_gemm"),
@@ -977,6 +1019,8 @@ class ScopeTest(JitCacheTestBase):
         triton = next(x for x in jit.COMPONENTS if x.name == "triton")
         self.assertTrue(triton.should_sync("hash/kernel.cubin"))
         self.assertTrue(triton.should_sync("hash/kernel.cubin", "closed"))
+        self.assertTrue(triton.should_sync("hash/kernel.hgbin"))
+        self.assertTrue(triton.should_sync("hash/kernel.hgbin", "closed"))
         self.assertFalse(triton.should_sync("hash/t.autotune.json"))
         self.assertFalse(triton.should_sync("hash/t.autotune.json", "closed"))
         self.assertFalse(triton.should_sync("../escape.cubin"))
@@ -1079,6 +1123,28 @@ class ManagerTest(JitCacheTestBase):
         remote = version_root / manager.scope.scope_id
         remote.mkdir(parents=True, exist_ok=True)
         self.publish(store.RemoteSnapshotStore(remote), {rel: data})
+
+    def test_restore_repairs_binary_less_triton_groups(self):
+        scope = self.make_scope()
+        manager = self.make_manager(scope)
+        remote = (
+            Path(manager._remote_value) / jit.RTP_JIT_VERSION / manager.scope.scope_id
+        )
+        remote.mkdir(parents=True, exist_ok=True)
+        self.publish(
+            store.RemoteSnapshotStore(remote),
+            {
+                "triton/hashA/__grp__k.json": b"{}",
+                "triton/hashA/k.json": b"{}",
+                "triton/hashA/k.llir": b"ir",
+                "triton/hashA/__triton_launcher.cpython-312-x86_64-linux-gnu.so": b"launcher",
+            },
+        )
+        self.assertTrue(manager.bootstrap(timeout_s=30))
+        self.assertIsNotNone(manager._restored)
+        # Restored poison would otherwise fail every later compile with
+        # KeyError("Unknown key: 'hgbin'") on the cache-hit path.
+        self.assertFalse((scope.root / "triton" / "hashA").exists())
 
     def test_non_positive_setup_timeout_starts_cold(self):
         # argparse rejects these; a raw env read must degrade, not raise.

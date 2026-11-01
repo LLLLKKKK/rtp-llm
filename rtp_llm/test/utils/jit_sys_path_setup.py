@@ -254,8 +254,30 @@ def modify_bazel_wrapper_pythonpath(wrapper_path):
         return False
 
 
+REMOTE_JIT_AUTO = "auto"
+
+
 def bootstrap_remote_jit_dir():
-    remote = os.environ.get("REMOTE_JIT_DIR", "").strip()
+    # Expand $VAR references the same way the server arg parser does: this
+    # wrapper runs before the test and owns the only chance to bootstrap the
+    # directory and hand child processes a normalized absolute path. A literal
+    # "$VAR/..." is not POSIX-absolute, so without expansion every $VAR-form
+    # REMOTE_JIT_DIR is refused here and silently dropped for the server.
+    # REMOTE_JIT_DIR=auto is the CI-safe form: a plain word survives every
+    # quoting/expansion layer of the CI command assembly (a $VAR reference
+    # gets expanded on the runner, where the variable is empty, and reached
+    # bazel as "/main/jit_cache" in run 85063732), and resolves here from
+    # HIPPO_APP_WORKDIR, which nativelink injects into every remote action.
+    if os.environ.get("REMOTE_JIT_DIR", "").strip() == REMOTE_JIT_AUTO:
+        workdir = os.environ.get("HIPPO_APP_WORKDIR", "").strip()
+        if not workdir:
+            os.environ.pop("REMOTE_JIT_DIR", None)  # child servers inherit the env
+            logging.warning(
+                "[JIT] REMOTE_JIT_DIR=auto refused (HIPPO_APP_WORKDIR unset); cold start later"
+            )
+            return
+        os.environ["REMOTE_JIT_DIR"] = str(Path(workdir) / "main" / "jit_cache")
+    remote = os.path.expandvars(os.environ.get("REMOTE_JIT_DIR", "")).strip()
     if not remote or urlparse(remote).scheme:
         return
     try:
@@ -275,6 +297,46 @@ def bootstrap_remote_jit_dir():
     except (OSError, RuntimeError) as e:
         os.environ.pop("REMOTE_JIT_DIR", None)  # child servers inherit the env
         logging.warning(f"[JIT] REMOTE_JIT_DIR refused ({e}); cold start later")
+
+
+def _persistent_disk_cache_root() -> Path | None:
+    """Per-worker persistent root for py_test disk caches.
+
+    REMOTE_JIT_DIR (already normalized by bootstrap_remote_jit_dir()) is the
+    snapshot-store territory: jit_cache_store publishes its *.jit_snapshot
+    archives there and safe_local_path refuses cache paths under it. Its
+    parent sits on the same instance-root mount ($HIPPO_APP_WORKDIR/main),
+    which survives container rootfs swaps -- unlike HOME, whose
+    .triton/.deep_gemm/.cache trees die with every generation. Anchor the
+    py_test disk caches on a sibling tree there, scoped by uid so
+    ensure_writable_directory's same-owner rule holds for every action user
+    of a shared worker. The server-side jit_cache_manager still overrides
+    these envs to its v2 scope trees for server processes: automatic-marked
+    values are not explicit, so the smoke path is unaffected.
+    """
+    remote = os.environ.get("REMOTE_JIT_DIR", "").strip()
+    if not remote or urlparse(remote).scheme:
+        return None
+    shared = Path(remote).parent / "jit_disk_cache"
+    root = shared / f"u{os.getuid()}"
+    try:
+        shared.mkdir(parents=True)
+    except OSError:
+        pass
+    with suppress(OSError):
+        shared.chmod(0o1777)  # protect direct children of a shared root
+    try:
+        root.mkdir()
+    except OSError:
+        pass
+    if cache_env.safe_local_path(root) is None or not os.access(
+        root, os.R_OK | os.W_OK | os.X_OK
+    ):
+        logging.warning(
+            f"[Package Setup] persistent disk cache root unusable: {root}"
+        )
+        return None
+    return root
 
 
 def _flashinfer_op_is_stale(op_dir: Path) -> bool:
@@ -325,9 +387,25 @@ def _evict_dangling_flashinfer_ops(workspace: Path) -> None:
     # directory directly instead of walking the workspace tree: the workspace
     # root must never be treated as enumerable (a HOME-sized root once dragged
     # the whole FUSE-mounted model library into this scan).
-    cached_ops_root = workspace / "cached_ops"
-    if cached_ops_root.is_dir():
-        for op_dir in sorted(cached_ops_root.iterdir()):
+    # flashinfer >= 0.6.9 nests the ops dir as
+    # <workspace>/.cache/flashinfer/<version>/<arch>/cached_ops (jit/env.py),
+    # so scan both layouts: missing the nested one is how poisoned
+    # runfiles-anchored ops survived eviction in CI run 85083250.
+    cached_ops_roots = [workspace / "cached_ops"]
+    try:
+        cached_ops_roots += sorted(
+            (workspace / ".cache" / "flashinfer").glob("*/*/cached_ops")
+        )
+    except OSError:
+        pass  # neighbor scope vanished or is not listable
+    for cached_ops_root in cached_ops_roots:
+        try:
+            if not cached_ops_root.is_dir():
+                continue
+            op_dirs = sorted(cached_ops_root.iterdir())
+        except OSError:
+            continue  # cross-UID shared tree: neighbor scope not listable, or deleted mid-scan
+        for op_dir in op_dirs:
             if (op_dir / "build.ninja").is_file() and _flashinfer_op_is_stale(op_dir):
                 stale_candidates.append(op_dir)
     logging.info(
@@ -354,6 +432,12 @@ def _evict_dangling_flashinfer_ops(workspace: Path) -> None:
             # Somebody else owns the op (likely recompiling it); leave it alone.
             skipped += 1
             logging.info(f"[Package Setup] Skipped eviction of {op_dir}: lock busy")
+        except OSError as error:
+            # Cross-UID shared tree: a neighbor scope with restrictive
+            # permissions, or the tree was deleted by a concurrent
+            # commit_restore. Skipping one candidate only costs a rebuild.
+            skipped += 1
+            logging.info(f"[Package Setup] Skipped eviction of {op_dir}: {error}")
     logging.info(
         f"[Package Setup] FlashInfer eviction done in "
         f"{time.monotonic() - started:.1f}s: evicted={evicted} skipped={skipped} "
@@ -364,21 +448,57 @@ def _evict_dangling_flashinfer_ops(workspace: Path) -> None:
 def setup_jit_cache(cache_dir=None, packages=None):
     logging.info("[Package Setup] setup_jit_cache starting")
     bootstrap_remote_jit_dir()
+    persistent = _persistent_disk_cache_root()
+    if persistent is not None:
+        logging.info(f"[Package Setup] persistent disk cache root: {persistent}")
     # The workspace must be the actual FlashInfer cache directory, never HOME:
     # on CI workers HOME transitively contains the FUSE-mounted model library,
     # and the eviction scan below would then crawl every .git/objects fanout
     # (measured minutes per test action at 0% GPU).
+    flashinfer_default = (
+        persistent / "flashinfer"
+        if persistent
+        else Path.home() / ".cache" / "flashinfer"
+    )
     cache_env.configure_writable_cache_env(
         "FLASHINFER_WORKSPACE_BASE",
-        Path.home() / ".cache" / "flashinfer",
+        flashinfer_default,
         "flashinfer",
     )
     _evict_dangling_flashinfer_ops(Path(os.environ["FLASHINFER_WORKSPACE_BASE"]))
+    # The managed v2 scope workspaces (the server-side jit_cache_manager
+    # redirects flashinfer ops there) are invisible to the default-root scan
+    # above: stale ops whose build.ninja embeds per-action runfiles include
+    # paths survive there and break the next cold-start consumer that touches
+    # the same op (run 85063732: fused_moe_trtllm_sm100 shipped includes from
+    # a destroyed runfiles tree). Scan every scope's flashinfer workspace too.
+    # The tree is cross-UID shared: neighbor scopes may be unreadable or the
+    # tree itself may be deleted mid-scan, so the glob is guarded.
+    try:
+        v2_scopes = sorted(
+            Path("/tmp/rtp-llm/.jit_cache/v2").glob("*/flashinfer")
+        )
+    except OSError:
+        v2_scopes = []
+    for scope_workspace in v2_scopes:
+        _evict_dangling_flashinfer_ops(scope_workspace)
+    # Triton's own cache key already scopes by kernel source, constexpr
+    # specialization and target arch, so the content-addressed tree needs no
+    # v2 scope machinery -- only the launcher stubs embed the CPython ABI,
+    # which the per-interpreter directory covers (same cp-tag reason as
+    # _cache_key: a host can serve cp310 and cp312 lanes side by side).
+    triton_default = (
+        persistent / "triton_disk" / ("cp%d%d" % sys.version_info[:2])
+        if persistent
+        else Path.home() / ".triton" / "cache"
+    )
     cache_env.configure_writable_cache_env(
-        "TRITON_CACHE_DIR", Path.home() / ".triton" / "cache", "triton"
+        "TRITON_CACHE_DIR", triton_default, "triton"
     )
 
-    requested_cache_dir = cache_dir or Path.home() / ".cache"
+    requested_cache_dir = cache_dir or (
+        (persistent / "python_packages") if persistent else Path.home() / ".cache"
+    )
     cache_dir = cache_env.ensure_writable_directory(requested_cache_dir)
     if cache_dir is None:
         cache_dir = cache_env.ensure_writable_directory(
@@ -391,15 +511,23 @@ def setup_jit_cache(cache_dir=None, packages=None):
     # compiling. A relative cache path would then be resolved a second time
     # and make the generated kernel.cu unreachable. Normalize both the default
     # and caller-provided path before launching the actual test process.
+    dg_default = (
+        persistent / "deep_gemm" if persistent else Path.home() / ".deep_gemm"
+    )
     cache_env.configure_writable_cache_env(
-        "DG_JIT_CACHE_DIR", Path.home() / ".deep_gemm", "deep_gemm"
+        "DG_JIT_CACHE_DIR",
+        dg_default,
+        "deep_gemm",
     )
     logging.info(
         f"[Package Setup] Set DG_JIT_CACHE_DIR: {os.environ['DG_JIT_CACHE_DIR']}"
     )
 
     if packages is None:
-        packages = ["flashinfer", "torch", "deep_gemm", "tvm_ffi"]
+        # flashinfer_cubin carries the flashInferMetaInfo.h / csrc headers that
+        # fmha_gen ops embed as -I paths: without a stable package copy those
+        # anchors point into per-action runfiles and poison the shared cache.
+        packages = ["flashinfer", "flashinfer_cubin", "torch", "deep_gemm", "tvm_ffi"]
 
     # Copy packages to cache with file locking
     copied_paths = []

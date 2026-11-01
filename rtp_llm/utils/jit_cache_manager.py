@@ -125,11 +125,44 @@ COMPONENTS = (
     Component("flydsl", "FLYDSL_RUNTIME_CACHE_DIR", (rule(MOVED, ".pkl"),), ("accelerator", "@flydsl"), ROCM),
     Component("tvm_ffi", "TVM_FFI_CACHE_DIR", (rule(CREATED, ".so"),), ("torch", "@apache-tvm-ffi"), CUDA),
     Component("cute_dsl", "CUTE_DSL_CACHE_DIR", (rule(MOVED, ".mlir"),), ("accelerator", "@nvidia-cutlass-dsl"), CUDA),
-    # First match wins: autotune results remain local.
-    Component("triton", "TRITON_CACHE_DIR", (rule(frozenset(), ".autotune.json"), rule(CREATED, ".json", ".cubin", ".hsaco", ".so")), ("cxx",)),
+    # First match wins: autotune results remain local. .hgbin is the PPU
+    # backend's kernel binary (its .cubin is a symlink to it, never packed);
+    # without it in the sync set every PPU snapshot restores metadata-only
+    # groups that triton treats as hits and dies on (see _repair_triton_cache).
+    Component("triton", "TRITON_CACHE_DIR", (rule(frozenset(), ".autotune.json"), rule(CREATED, ".json", ".cubin", ".hsaco", ".so", ".hgbin")), ("cxx",)),
 )
 Scope = namedtuple("Scope", "scope_id root components")
 # fmt: on
+
+# A triton cache group is a hit as soon as its metadata json exists, and
+# CompiledKernel then fails with KeyError on a missing binary instead of
+# recompiling. The json is written only after the binary stage, so a group
+# without any kernel binary is always corrupt.
+TRITON_KERNEL_BINARIES = (".cubin", ".hsaco", ".hgbin")
+
+
+def _repair_triton_cache(triton_dir: Path) -> None:
+    """Drop binary-less triton groups so kernels take a genuine miss again."""
+    if not triton_dir.is_dir():
+        return
+    for entry in triton_dir.iterdir():
+        try:
+            if not entry.is_dir():
+                continue
+            children = list(entry.iterdir())
+        except OSError:
+            continue
+        names = {p.name for p in children}
+        if not any(n.startswith("__grp__") and n.endswith(".json") for n in names):
+            continue  # incomplete or non-group: triton recompiles on its own
+        if any(
+            p.name.endswith(TRITON_KERNEL_BINARIES) and p.is_file() for p in children
+        ):
+            continue  # a dangling .cubin symlink is not a usable binary either
+        shutil.rmtree(entry, ignore_errors=True)
+        logging.warning(
+            "JIT_CACHE_REPAIR: dropped binary-less triton group %s", entry.name
+        )
 
 
 def _distribution_version(name: str) -> str:
@@ -260,6 +293,11 @@ def setup_jit_cache_env() -> Scope | None:
         if scope.root.exists() and not os.access(scope.root, os.W_OK):
             raise OSError(f"scope root not shared by its owner: {scope.root}")
         for item in scope.components:
+            # Runs before any kernel compiles in this process, and again after
+            # a manager restore below: both entry points can inherit corrupt
+            # groups from a pre-.hgbin snapshot.
+            if item.name == "triton":
+                _repair_triton_cache(item.local_dir)
             configure_cache_env(item.env_name, item.local_dir, automatic=False)
             # Only torch/aiter use existence batons; tvm_ffi's same-named file is flocked.
             if item.name in ("torch_extensions", "aiter"):
@@ -320,6 +358,11 @@ class JitCacheManager(FileSystemEventHandler):
                         shutil.rmtree(prepared.staging, ignore_errors=True)
                     elif store.commit_restore(prepared.staging, root):
                         self._restored = prepared.snapshot.name
+                        # A snapshot published before a new binary suffix joined
+                        # the sync rules restores groups without that binary.
+                        for item in self.scope.components:
+                            if item.name == "triton":
+                                _repair_triton_cache(item.local_dir)
         except Exception:
             logging.exception("JIT_CACHE_FAIL_OPEN: restore failed")
         finally:
